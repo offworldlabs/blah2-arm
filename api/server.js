@@ -62,7 +62,12 @@ function connectToTracker() {
 
 function forwardToTracker(data) {
   if (trackerConnected && trackerSocket) {
-    trackerSocket.write(data);
+    // The newline is the frame delimiter, not decoration: retina-tracker reads
+    // this socket by splitting its accumulated buffer on "\n" and parsing each
+    // complete line. Without it every frame concatenates onto the last, the
+    // buffer grows for the life of the process and not one detection is ever
+    // parsed. The failure is silent at both ends.
+    trackerSocket.write(data + '\n');
   }
 }
 
@@ -80,12 +85,17 @@ var track = '';
 var timestamp = '';
 var timing = '';
 var iqdata = '';
-var data_map;
-var data_detection;
-var data_tracker;
-var data_timestamp;
-var data_timing;
-var data_iqdata;
+// Initialised, not bare `var`. Each of these accumulates a socket's bytes with
+// `data_x = data_x + msg`, so an undefined seed prefixes the literal string
+// "undefined" onto the first message after every start. On the detection socket
+// that made JSON.parse throw, so the first frame was always discarded and
+// /api/detection briefly served the garbage; the same applied to all six.
+var data_map = '';
+var data_detection = '';
+var data_tracker = '';
+var data_timestamp = '';
+var data_timing = '';
+var data_iqdata = '';
 var capture = false;
 
 // api server
