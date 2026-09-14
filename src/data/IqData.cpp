@@ -39,6 +39,11 @@ std::deque<std::complex<double>> IqData::get_data()
   return *data;
 }
 
+const std::deque<std::complex<double>> &IqData::view_data() const
+{
+  return *data;
+}
+
 void IqData::push_back(std::complex<double> sample)
 {
   if (data->size() < n)

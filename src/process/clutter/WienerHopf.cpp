@@ -67,8 +67,11 @@ WienerHopf::~WienerHopf()
 bool WienerHopf::process(IqData *x, IqData *y)
 {
   uint32_t i, j;
-  xData = x->get_data();
-  yData = y->get_data();
+  // Views, not copies: each of these was 16 MB and ~31,000 allocations a CPI.
+  // Both are read out into dataX/dataY immediately below and not touched
+  // again, so the later y->clear() cannot be observed through yData.
+  const std::deque<std::complex<double>> &xData = x->view_data();
+  const std::deque<std::complex<double>> &yData = y->view_data();
 
   // change deque to std::complex
   for (i = 0; i < nSamples; i++)

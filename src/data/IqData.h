@@ -66,6 +66,14 @@ public:
   /// @return IQ data.
   std::deque<std::complex<double>> get_data();
 
+  /// @brief Read-only view of the data, copying nothing.
+  /// @details Prefer this to get_data() on the hot path: a CPI is a million
+  /// samples, so a copy is 16 MB and roughly 31,000 deque-chunk allocations.
+  /// The caller must not hold the reference across anything that mutates the
+  /// queue (push_back, pop_front, clear).
+  /// @return Const reference to the IQ data.
+  const std::deque<std::complex<double>> &view_data() const;
+
   /// @brief Push a sample to the queue.
   /// @param sample A single sample.
   /// @return Void.

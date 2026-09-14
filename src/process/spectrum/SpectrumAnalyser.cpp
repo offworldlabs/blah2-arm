@@ -32,25 +32,20 @@ void SpectrumAnalyser::process(IqData *x)
 {  
   // load data and FFT
   uint32_t i;
-  std::deque<std::complex<double>> data = x->get_data();
+  const std::deque<std::complex<double>> &data = x->view_data();
   for (i = 0; i < nfft; i++)
   {
     dataX[i] = data[i];
   }
   fftw_execute(fftX);
 
-  // fftshift
-  std::vector<std::complex<double>> fftshift;
-  for (i = 0; i < nfft; i++)
-  {
-    fftshift.push_back(dataX[(i + int(nfft / 2) + 1) % nfft]);
-  }
-  
-  // decimate
+  // fftshift and decimate in one pass. The full-length shifted vector was only
+  // ever read at every decimation-th element, so the same values come out.
   std::vector<std::complex<double>> spectrum;
+  spectrum.reserve((nfft + decimation - 1) / decimation);
   for (i = 0; i < nfft; i+=decimation)
   {
-    spectrum.push_back(fftshift[i]);
+    spectrum.push_back(dataX[(i + int(nfft / 2) + 1) % nfft]);
   }
   x->update_spectrum(spectrum);
 
