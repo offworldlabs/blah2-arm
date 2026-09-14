@@ -166,6 +166,33 @@ target_link_libraries(testCfarHoist PRIVATE
 set_target_properties(testCfarHoist PROPERTIES 
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
 
+add_executable(testCpiPipeline
+  test/unit/process/utility/TestCpiPipeline.cpp
+  src/data/IqData.cpp
+)
+# armadillo is linked only to pick up the vcpkg include path, which is
+# where rapidjson lives; RAPIDJSON_INCLUDE_DIRS is NOTFOUND in this build.
+target_link_libraries(testCpiPipeline PRIVATE
+  armadillo
+)
+set_target_properties(testCpiPipeline PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
+add_executable(testStageOrder
+  test/unit/process/clutter/TestStageOrder.cpp
+  src/process/clutter/WienerHopf.cpp
+  src/process/spectrum/SpectrumAnalyser.cpp
+  src/process/meta/FftLength.cpp
+  src/data/IqData.cpp
+)
+target_link_libraries(testStageOrder PRIVATE
+  armadillo
+  fftw3
+  fftw3_threads
+)
+set_target_properties(testStageOrder PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
 # TODO: Unsure if will be using CTest.
 add_test(NAME testAmbiguity COMMAND testAmbiguity)
 add_test(NAME testTracker COMMAND testTracker)
@@ -173,3 +200,5 @@ add_test(NAME testClutterFft COMMAND testClutterFft)
 add_test(NAME testJsonKm COMMAND testJsonKm)
 add_test(NAME testAmbiguityIndexing COMMAND testAmbiguityIndexing)
 add_test(NAME testCfarHoist COMMAND testCfarHoist)
+add_test(NAME testCpiPipeline COMMAND testCpiPipeline)
+add_test(NAME testStageOrder COMMAND testStageOrder)

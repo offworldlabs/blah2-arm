@@ -10,6 +10,7 @@
 #define WIENERHOPF_H
 
 #include "data/IqData.h"
+#include "process/meta/FftLength.h"
 #include <stdint.h>
 #include <fftw3.h>
 #include <armadillo>
@@ -66,8 +67,12 @@ public:
   /// @param delayMin Minimum clutter filter delay (bins).
   /// @param delayMax Maximum clutter filter delay (bins).
   /// @param nSamples Number of samples per CPI.
+  /// @param plannerThreads Threads the filter's plans will run with. The
+  /// quickest transform length depends on the thread count, so the length
+  /// search has to be told what the plans will actually use.
   /// @return The object.
-  WienerHopf(int32_t delayMin, int32_t delayMax, uint32_t nSamples);
+  WienerHopf(int32_t delayMin, int32_t delayMax, uint32_t nSamples,
+             int plannerThreads = blah2::kPlannerThreads);
 
   uint32_t filter_fft_length() const { return nFilter; }
 

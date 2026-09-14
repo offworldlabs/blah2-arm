@@ -5,7 +5,8 @@
 #include <vector>
 
 // constructor
-WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
+WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples,
+                       int _plannerThreads)
 {
   // input
   delayMin = _delayMin;
@@ -19,7 +20,7 @@ WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
   // unchanged. The length is timed rather than derived: under
   // fftw_plan_with_nthreads() the quickest size does not follow from the
   // factorisation, and the ranking differs between machines and thread counts.
-  nFilter = blah2::fastestFftLength(uint64_t(nSamples) + nBins + 1);
+  nFilter = blah2::fastestFftLength(uint64_t(nSamples) + nBins + 1, 0.02, _plannerThreads);
 
   // initialise data
   A = arma::cx_mat(nBins, nBins);

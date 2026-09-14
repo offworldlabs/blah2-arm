@@ -12,6 +12,15 @@ namespace blah2 {
 // depends on this, so it belongs anywhere the choice is made or remembered.
 inline constexpr int kPlannerThreads = 4;
 
+// The two processing stages run concurrently, so their plans have to share the
+// four cores rather than each claiming all of them. Measured per-plan on a Pi 5
+// at the shipped geometry, the clutter transforms prefer 2 threads to 4 anyway
+// (1e6 points: 118.2 ms against 146.8 ms per CPI, and 89.5 against 96.8 for the
+// filter length), so the front stage gains from halving. The ambiguity batch
+// transforms are the ones that pay, giving up about 21 ms.
+inline constexpr int kFrontStageThreads = 2;
+inline constexpr int kBackStageThreads = 2;
+
 // FFTW supports these small factors efficiently. Permit at most one factor of
 // 11 or 13. Enumerate bounded candidates instead of an unbounded integer scan.
 inline uint32_t nextFastFftLength(uint64_t minimum) {

@@ -16,6 +16,7 @@
 #include "process/meta/FftLength.h"
 #include "process/spectrum/SpectrumAnalyser.h"
 #include "process/tracker/Tracker.h"
+#include "process/utility/CpiPipeline.h"
 #include "process/utility/Socket.h"
 #include "process/utility/TuneState.h"
 #include "data/meta/Constants.h"
@@ -111,13 +112,19 @@ int main(int argc, char **argv)
 
   // setup process CPI
   uint32_t nSamples = fs * tCpi;
-  IqData *x = new IqData(nSamples);
-  IqData *y = new IqData(nSamples);
-  Map<std::complex<double>> *map;
-  std::unique_ptr<Detection> detection;
-  std::unique_ptr<Detection> detection1;
-  std::unique_ptr<Detection> detection2;
-  std::unique_ptr<Track> track;
+
+  // Slots in flight between the two processing stages. Two is enough for full
+  // overlap: the front stage fills one while the back stage drains the other,
+  // and a stage that runs ahead blocks on the free list.
+  constexpr size_t kPipelineDepth = 2;
+  std::vector<std::unique_ptr<blah2::CpiSlot>> slots;
+  blah2::BlockingQueue<blah2::CpiSlot *> freeSlots;
+  blah2::BlockingQueue<blah2::CpiSlot *> filteredSlots;
+  for (size_t i = 0; i < kPipelineDepth; i++)
+  {
+    slots.push_back(std::make_unique<blah2::CpiSlot>(nSamples));
+    freeSlots.push(slots.back().get());
+  }
 
   // setup fftw multithread
   if (fftw_init_threads() == 0)
@@ -125,7 +132,6 @@ int main(int argc, char **argv)
     std::cout << "Error in FFTW multithreading." << std::endl;
     return -1;
   }
-  fftw_plan_with_nthreads(blah2::kPlannerThreads);
 
   // setup socket
   sleep(5);
@@ -154,14 +160,20 @@ int main(int argc, char **argv)
   tree["process"]["ambiguity"]["delayMax"] >> delayMax;
   tree["process"]["ambiguity"]["dopplerMin"] >> dopplerMin;
   tree["process"]["ambiguity"]["dopplerMax"] >> dopplerMax;
-  Ambiguity *ambiguity = new Ambiguity(delayMin, delayMax, 
+  // FFTW bakes the thread count into the plan, so the two stages get their own
+  // share of the cores by planning with different counts. Ambiguity and the
+  // spectrum analyser run in the back stage, the clutter filter in the front.
+  fftw_plan_with_nthreads(blah2::kBackStageThreads);
+  Ambiguity *ambiguity = new Ambiguity(delayMin, delayMax,
     dopplerMin, dopplerMax, fs, nSamples, roundHamming);
 
   // setup process clutter
   int32_t delayMinClutter, delayMaxClutter;
   tree["process"]["clutter"]["delayMin"] >> delayMinClutter;
   tree["process"]["clutter"]["delayMax"] >> delayMaxClutter;
-  WienerHopf *filter = new WienerHopf(delayMinClutter, delayMaxClutter, nSamples);
+  fftw_plan_with_nthreads(blah2::kFrontStageThreads);
+  WienerHopf *filter = new WienerHopf(delayMinClutter, delayMaxClutter, nSamples,
+    blah2::kFrontStageThreads);
 
   // setup process detection
   double pfa, minDoppler;
@@ -194,6 +206,7 @@ int main(int argc, char **argv)
 
   // setup process spectrum analyser
   double spectrumBandwidth = 2000;
+  fftw_plan_with_nthreads(blah2::kBackStageThreads);
   SpectrumAnalyser *spectrumAnalyser = new SpectrumAnalyser(nSamples, spectrumBandwidth);
 
   // process options
@@ -226,139 +239,208 @@ int main(int argc, char **argv)
   // setup output timing
   uint64_t tStart = current_time_ms();
   Timing *timing = new Timing(tStart);
-  std::vector<std::string> timing_name;
-  std::vector<double> timing_time;
-  std::string jsonTiming;
-  std::vector<uint64_t> time;
 
-  // setup output json
-  std::string mapJson, detectionJson, jsonTracker, jsonIqData;
-
-  // run process
+  // Front stage: pull a CPI out of the capture buffers and clutter filter it.
+  // This is the slow half, so it sets the throughput of the whole radar.
   std::thread t2([&]{
       while (true)
       {
-        buffer1->lock();
-        buffer2->lock();
-        if ((buffer1->get_length() > nSamples) && (buffer2->get_length() > nSamples))
+        blah2::CpiSlot *slot = freeSlots.pop();
+
+        // wait for a full CPI to land in the capture buffers
+        while (true)
         {
-          time.push_back(current_time_us());
-          // extract data from buffer
-          for (uint32_t i = 0; i < nSamples; i++)
+          buffer1->lock();
+          buffer2->lock();
+          if ((buffer1->get_length() > nSamples) && (buffer2->get_length() > nSamples))
           {
-            x->push_back(buffer1->pop_front());
-            y->push_back(buffer2->pop_front());      
+            break;
           }
-          buffer1->unlock();
-          buffer2->unlock();
-          timing_helper(timing_name, timing_time, time, "extract_buffer");
-
-          // live retune: refresh wavelength and drop stale tracks on fc change
-          if (g_tuneState.fcChanged.exchange(false))
-          {
-            fc = g_tuneState.currentFc.load();
-            lambda = (double)Constants::c/fc;
-            tracker->set_lambda(lambda);
-            tracker->reset();
-          }
-
-          // spectrum
-          spectrumAnalyser->process(x);
-          timing_helper(timing_name, timing_time, time, "spectrum");
-          
-          // clutter filter
-          if (isClutter)
-          {
-            if (!filter->process(x, y))
-            {
-              continue;
-            }
-            timing_helper(timing_name, timing_time, time, "clutter_filter");
-          }
-          
-          // ambiguity process
-          map = ambiguity->process(x, y);
-          map->set_metrics();
-          timing_helper(timing_name, timing_time, time, "ambiguity_processing");
-          
-          // detection process
-          if (isDetection)
-          {
-            detection1 = cfarDetector1D->process(map);
-            detection2 = centroid->process(detection1.get());
-            detection = interpolate->process(detection2.get(), map);
-            timing_helper(timing_name, timing_time, time, "detector");
-          }
-
-          // tracker process
-          if (isTracker)
-          {
-            track = tracker->process(detection.get(), time[0]/1000);
-            timing_helper(timing_name, timing_time, time, "tracker");
-          }
-
-          // output IqData meta data
-          jsonIqData = x->to_json(time[0]/1000);
-          socket_iqdata.sendData(jsonIqData);
-
-          // output map data
-          mapJson = map->to_json_km(time[0]/1000, fs);
-          if (saveMap)
-          {
-            map->save(mapJson, saveMapPath);
-          }
-          socket_map.sendData(mapJson);
-
-          // output detection data
-          if (isDetection)
-          {
-            detectionJson = detection->to_json_km(time[0]/1000, fs);
-            socket_detection.sendData(detectionJson);
-          }
-
-          // output tracker data
-          if (isTracker)
-          {
-            jsonTracker = track->to_json(time[0]/1000);
-            socket_track.sendData(jsonTracker);
-          }
-
-          // output radar data timer
-          timing_helper(timing_name, timing_time, time, "output_radar_data");
-
-          // cpi timer
-          time.push_back(current_time_us());
-          double delta_ms = (double)(time.back()-time[0]) / 1000;
-          timing_name.push_back("cpi");
-          timing_time.push_back(delta_ms);
-          if (verbose)
-          {
-            std::cout << "CPI time (ms): " << delta_ms << std::endl;
-          }
-
-          // output timing data
-          timing->update(time[0]/1000, timing_time, timing_name);
-          jsonTiming = timing->to_json();
-          socket_timing.sendData(jsonTiming);
-          timing_time.clear();
-          timing_name.clear();
-
-          // output CPI timestamp for updating data
-          std::string t0_string = std::to_string(time[0]/1000);
-          socket_timestamp.sendData(t0_string);
-          time.clear();
-
-        }
-        else
-        {
           buffer1->unlock();
           buffer2->unlock();
           // short delay to prevent tight looping
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+
+        slot->reset();
+        slot->time.push_back(current_time_us());
+        // extract data from buffer
+        for (uint32_t i = 0; i < nSamples; i++)
+        {
+          slot->x->push_back(buffer1->pop_front());
+          slot->y->push_back(buffer2->pop_front());
+        }
+        buffer1->unlock();
+        buffer2->unlock();
+        timing_helper(slot->timingName, slot->timingTime, slot->time, "extract_buffer");
+
+        // Latch a live retune against the CPI it applies to rather than acting
+        // on it here: the tracker it resets runs in the back stage.
+        slot->fcChanged = g_tuneState.fcChanged.exchange(false);
+        if (slot->fcChanged)
+        {
+          slot->fc = g_tuneState.currentFc.load();
+        }
+
+        // clutter filter
+        if (isClutter)
+        {
+          if (!filter->process(slot->x.get(), slot->y.get()))
+          {
+            // Drop the CPI as the serial loop did, but hand the retune back so
+            // a failed filter cannot swallow it.
+            if (slot->fcChanged)
+            {
+              g_tuneState.fcChanged.store(true);
+            }
+            slot->x->clear();
+            slot->y->clear();
+            freeSlots.push(slot);
+            continue;
+          }
+          timing_helper(slot->timingName, slot->timingTime, slot->time, "clutter_filter");
+        }
+
+        filteredSlots.push(slot);
       }
     });
+
+  // Back stage: everything downstream of the clutter filter, in capture order.
+  // The tracker's state stays here, so it still sees every CPI exactly once and
+  // in sequence.
+  std::thread t3([&]{
+      Map<std::complex<double>> *map;
+      std::unique_ptr<Detection> detection;
+      std::unique_ptr<Detection> detection1;
+      std::unique_ptr<Detection> detection2;
+      std::unique_ptr<Track> track;
+      std::string mapJson, detectionJson, jsonTracker, jsonIqData, jsonTiming;
+      uint64_t previousCpiEnd = 0;
+
+      while (true)
+      {
+        blah2::CpiSlot *slot = filteredSlots.pop();
+        std::vector<std::string> &timing_name = slot->timingName;
+        std::vector<double> &timing_time = slot->timingTime;
+        std::vector<uint64_t> &time = slot->time;
+
+        // Idle time waiting on the front stage. Near zero means this stage is
+        // the bottleneck; large means the clutter filter is.
+        timing_helper(timing_name, timing_time, time, "pipeline_wait");
+
+        // live retune: refresh wavelength and drop stale tracks on fc change
+        if (slot->fcChanged)
+        {
+          fc = slot->fc;
+          lambda = (double)Constants::c/fc;
+          tracker->set_lambda(lambda);
+          tracker->reset();
+        }
+
+        // spectrum. Reads the reference channel, which the clutter filter only
+        // reads too, so running it after the filter instead of before leaves
+        // its output unchanged. It has to stay ahead of ambiguity, which drains
+        // the channel it reads.
+        spectrumAnalyser->process(slot->x.get());
+        timing_helper(timing_name, timing_time, time, "spectrum");
+
+        // ambiguity process
+        map = ambiguity->process(slot->x.get(), slot->y.get());
+        map->set_metrics();
+        timing_helper(timing_name, timing_time, time, "ambiguity_processing");
+
+        // detection process
+        if (isDetection)
+        {
+          detection1 = cfarDetector1D->process(map);
+          detection2 = centroid->process(detection1.get());
+          detection = interpolate->process(detection2.get(), map);
+          timing_helper(timing_name, timing_time, time, "detector");
+        }
+
+        // tracker process
+        if (isTracker)
+        {
+          track = tracker->process(detection.get(), time[0]/1000);
+          timing_helper(timing_name, timing_time, time, "tracker");
+        }
+
+        // output IqData meta data
+        jsonIqData = slot->x->to_json(time[0]/1000);
+        socket_iqdata.sendData(jsonIqData);
+
+        // output map data
+        mapJson = map->to_json_km(time[0]/1000, fs);
+        if (saveMap)
+        {
+          map->save(mapJson, saveMapPath);
+        }
+        socket_map.sendData(mapJson);
+
+        // output detection data
+        if (isDetection)
+        {
+          detectionJson = detection->to_json_km(time[0]/1000, fs);
+          socket_detection.sendData(detectionJson);
+        }
+
+        // output tracker data
+        if (isTracker)
+        {
+          jsonTracker = track->to_json(time[0]/1000);
+          socket_track.sendData(jsonTracker);
+        }
+
+        // output radar data timer
+        timing_helper(timing_name, timing_time, time, "output_radar_data");
+
+        // cpi timer. Work done on this CPI across both stages, excluding the
+        // queue wait, so it stays the same quantity the serial loop reported.
+        double delta_ms = 0;
+        for (size_t i = 0; i < timing_time.size(); i++)
+        {
+          if (timing_name[i] != "pipeline_wait")
+          {
+            delta_ms += timing_time[i];
+          }
+        }
+        timing_name.push_back("cpi");
+        timing_time.push_back(delta_ms);
+
+        // Wall clock between CPIs leaving the pipeline. With the stages
+        // overlapped this, not "cpi", is the throughput the radar achieves.
+        uint64_t cpiEnd = current_time_us();
+        if (previousCpiEnd != 0)
+        {
+          timing_name.push_back("cpi_interval");
+          timing_time.push_back((double)(cpiEnd - previousCpiEnd) / 1000);
+        }
+        previousCpiEnd = cpiEnd;
+
+        if (verbose)
+        {
+          std::cout << "CPI time (ms): " << delta_ms << std::endl;
+        }
+
+        // output timing data
+        timing->update(time[0]/1000, timing_time, timing_name);
+        jsonTiming = timing->to_json();
+        socket_timing.sendData(jsonTiming);
+
+        // output CPI timestamp for updating data
+        std::string t0_string = std::to_string(time[0]/1000);
+        socket_timestamp.sendData(t0_string);
+
+        // Ambiguity leaves a partial batch behind; clearing gives the front
+        // stage the same empty queue the serial loop's eviction produced.
+        slot->x->clear();
+        slot->y->clear();
+        freeSlots.push(slot);
+      }
+    });
+
   t2.join();
+  t3.join();
   t1.join();
 
   return 0;
