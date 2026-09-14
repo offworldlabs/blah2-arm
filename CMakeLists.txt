@@ -112,6 +112,20 @@ target_link_libraries(testHammingNumber PRIVATE
 set_target_properties(testHammingNumber PROPERTIES 
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
 
+add_executable(testClutterFft
+  test/unit/process/clutter/TestClutterFft.cpp
+  src/process/clutter/WienerHopf.cpp
+  src/data/IqData.cpp
+)
+target_link_libraries(testClutterFft PRIVATE 
+  armadillo 
+  fftw3 
+  fftw3_threads
+)
+set_target_properties(testClutterFft PROPERTIES 
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
 # TODO: Unsure if will be using CTest.
 add_test(NAME testAmbiguity COMMAND testAmbiguity)
 add_test(NAME testTracker COMMAND testTracker)
+add_test(NAME testClutterFft COMMAND testClutterFft)

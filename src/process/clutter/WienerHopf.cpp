@@ -1,4 +1,5 @@
 #include "WienerHopf.h"
+#include "process/meta/FftLength.h"
 #include <complex>
 #include <iostream>
 #include <vector>
@@ -9,8 +10,13 @@ WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
   // input
   delayMin = _delayMin;
   delayMax = _delayMax;
-  nBins = delayMax - delayMin;
+  const int64_t taps = int64_t(delayMax) - delayMin;
+  if (!_nSamples || taps <= 0 || uint64_t(taps) > _nSamples)
+    throw std::invalid_argument("Clutter filter needs a non-empty half-open delay range no longer than the CPI");
+  nBins = static_cast<uint32_t>(taps);
   nSamples = _nSamples;
+  // Pad only the linear convolution; keep taps and circular correlations unchanged.
+  nFilter = blah2::nextFastFftLength(uint64_t(nSamples) + nBins + 1);
 
   // initialise data
   A = arma::cx_mat(nBins, nBins);
@@ -25,9 +31,9 @@ WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
   dataOutY = new std::complex<double>[nSamples];
   dataA = new std::complex<double>[nSamples];
   dataB = new std::complex<double>[nSamples];
-  filtX = new std::complex<double>[nBins + nSamples + 1];
-  filtW = new std::complex<double>[nBins + nSamples + 1];
-  filt = new std::complex<double>[nBins + nSamples + 1];
+  filtX = new std::complex<double>[nFilter];
+  filtW = new std::complex<double>[nFilter];
+  filt = new std::complex<double>[nFilter];
   fftX = fftw_plan_dft_1d(nSamples, reinterpret_cast<fftw_complex *>(dataX),
                           reinterpret_cast<fftw_complex *>(dataOutX), FFTW_FORWARD, FFTW_ESTIMATE);
   fftY = fftw_plan_dft_1d(nSamples, reinterpret_cast<fftw_complex *>(dataY),
@@ -36,11 +42,11 @@ WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
                           reinterpret_cast<fftw_complex *>(dataA), FFTW_BACKWARD, FFTW_ESTIMATE);
   fftB = fftw_plan_dft_1d(nSamples, reinterpret_cast<fftw_complex *>(dataB),
                           reinterpret_cast<fftw_complex *>(dataB), FFTW_BACKWARD, FFTW_ESTIMATE);
-  fftFiltX = fftw_plan_dft_1d(nBins + nSamples + 1, reinterpret_cast<fftw_complex *>(filtX),
+  fftFiltX = fftw_plan_dft_1d(nFilter, reinterpret_cast<fftw_complex *>(filtX),
                               reinterpret_cast<fftw_complex *>(filtX), FFTW_FORWARD, FFTW_ESTIMATE);
-  fftFiltW = fftw_plan_dft_1d(nBins + nSamples + 1, reinterpret_cast<fftw_complex *>(filtW),
+  fftFiltW = fftw_plan_dft_1d(nFilter, reinterpret_cast<fftw_complex *>(filtW),
                               reinterpret_cast<fftw_complex *>(filtW), FFTW_FORWARD, FFTW_ESTIMATE);
-  fftFilt = fftw_plan_dft_1d(nBins + nSamples + 1, reinterpret_cast<fftw_complex *>(filt),
+  fftFilt = fftw_plan_dft_1d(nFilter, reinterpret_cast<fftw_complex *>(filt),
                              reinterpret_cast<fftw_complex *>(filt), FFTW_BACKWARD, FFTW_ESTIMATE);
 }
 
@@ -64,7 +70,10 @@ bool WienerHopf::process(IqData *x, IqData *y)
   // change deque to std::complex
   for (i = 0; i < nSamples; i++)
   {
-    dataX[i] = xData[(((i - delayMin) % nSamples) + nSamples) % nSamples];
+    // Signed arithmetic: `i - delayMin` promotes to unsigned, so a positive
+    // delayMin wraps at 2^32 and lands on the wrong sample.
+    const int64_t shifted = (int64_t(i) - delayMin) % int64_t(nSamples);
+    dataX[i] = xData[shifted < 0 ? shifted + nSamples : shifted];
     dataY[i] = yData[i];
   }
 
@@ -126,7 +135,7 @@ bool WienerHopf::process(IqData *x, IqData *y)
   {
     filtX[i] = dataX[i];
   }
-  for (i = nSamples; i < nBins + nSamples + 1; i++)
+  for (i = nSamples; i < nFilter; i++)
   {
     filtX[i] = {0, 0};
   }
@@ -136,7 +145,7 @@ bool WienerHopf::process(IqData *x, IqData *y)
   {
     filtW[i] = w[i];
   }
-  for (i = nBins; i < nBins + nSamples + 1; i++)
+  for (i = nBins; i < nFilter; i++)
   {
     filtW[i] = {0, 0};
   }
@@ -146,7 +155,7 @@ bool WienerHopf::process(IqData *x, IqData *y)
   fftw_execute(fftFiltW);
 
   // compute convolution/filter
-  for (i = 0; i < nBins + nSamples + 1; i++)
+  for (i = 0; i < nFilter; i++)
   {
     filt[i] = (filtW[i] * filtX[i]);
   }
@@ -156,7 +165,7 @@ bool WienerHopf::process(IqData *x, IqData *y)
   y->clear();
   for (i = 0; i < nSamples; i++)
   {
-    y->push_back(dataY[i] - (filt[i] / (double)(nBins + nSamples + 1)));
+    y->push_back(dataY[i] - (filt[i] / (double)nFilter));
   }
 
   return true;
