@@ -13,6 +13,7 @@
 #include "process/detection/CfarDetector1D.h"
 #include "process/detection/Centroid.h"
 #include "process/detection/Interpolate.h"
+#include "process/meta/FftLength.h"
 #include "process/spectrum/SpectrumAnalyser.h"
 #include "process/tracker/Tracker.h"
 #include "process/utility/Socket.h"
@@ -124,7 +125,7 @@ int main(int argc, char **argv)
     std::cout << "Error in FFTW multithreading." << std::endl;
     return -1;
   }
-  fftw_plan_with_nthreads(4);
+  fftw_plan_with_nthreads(blah2::kPlannerThreads);
 
   // setup socket
   sleep(5);

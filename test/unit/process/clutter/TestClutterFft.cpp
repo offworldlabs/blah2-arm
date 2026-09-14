@@ -1,9 +1,15 @@
 #include "process/clutter/WienerHopf.h"
 #include "process/meta/FftLength.h"
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 using Complex = std::complex<double>;
@@ -125,6 +131,51 @@ int main() {
       try { (void)blah2::fftLengthCandidates(1000411, -0.5); }
       catch (const std::invalid_argument&) { rejected = true; }
       require(rejected, "Negative FFT length slack accepted");
+    }
+
+    {
+      // Cache round-trip. Measuring is what makes startup slow, so a second
+      // call with the same geometry must reuse the stored answer rather than
+      // repeat the sweep.
+      const std::string cache = "/tmp/blah2-fft-length-test.cache";
+      std::remove(cache.c_str());
+      setenv("BLAH2_FFT_CACHE", cache.c_str(), 1);
+      require(blah2::fftLengthCachePath() == cache,
+        "BLAH2_FFT_CACHE did not override the cache path");
+
+      const auto timed = [](uint64_t minimum) {
+        const auto start = std::chrono::steady_clock::now();
+        const uint32_t length = blah2::fastestFftLength(minimum);
+        return std::pair<uint32_t, double>{length,
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count()};
+      };
+
+      const std::pair<uint32_t, double> cold = timed(40009);
+      const std::pair<uint32_t, double> warm = timed(40009);
+      require(warm.first == cold.first, "Cached FFT length differs from measured");
+      require(warm.second < cold.second,
+        "Cached lookup was no quicker than measuring");
+      require(std::ifstream(cache).good(), "Cache file was not written");
+
+      // A different geometry must not collide with the stored entry.
+      const uint32_t other = blah2::fastestFftLength(50021);
+      require(other >= 50021, "Cache returned a length below a new minimum");
+      require(blah2::fastestFftLength(40009) == cold.first,
+        "Adding a geometry evicted the earlier one");
+
+      // Garbage must be survivable: a cache is an optimisation, not a contract.
+      { std::ofstream(cache, std::ios::trunc) << "not-a-number\n\nx y z\n"; }
+      require(blah2::fastestFftLength(40009) >= 40009,
+        "Corrupt cache was not recovered from");
+
+      // An unwritable location must not stop the radar starting.
+      setenv("BLAH2_FFT_CACHE", "/nonexistent-directory/fft.cache", 1);
+      require(blah2::fastestFftLength(40009) >= 40009,
+        "Unwritable cache path was not tolerated");
+
+      unsetenv("BLAH2_FFT_CACHE");
+      std::remove(cache.c_str());
     }
     for (uint64_t invalid : {uint64_t(0), uint64_t(INT32_MAX),
                              uint64_t(INT32_MAX) + 1, UINT64_MAX}) {
