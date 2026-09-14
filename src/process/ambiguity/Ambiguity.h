@@ -102,7 +102,6 @@ private:
   std::vector<Complex> dataXi;
   std::vector<Complex> dataYi;
   std::vector<Complex> dataZi;
-  std::vector<Complex> dataCorr;
   std::vector<Complex> dataDoppler;
   /// @}
 
@@ -111,8 +110,6 @@ private:
 
   /// @brief Vector storage for ambiguity processing
   /// @{
-  std::vector<Complex> corr;
-  std::vector<Complex> delayProfile;
   /// @}
 
   /// @brief Map to store result.

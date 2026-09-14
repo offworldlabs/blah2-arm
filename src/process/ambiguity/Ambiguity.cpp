@@ -63,7 +63,6 @@ Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax,
   if (_roundHamming) {
     nfft = next_hamming(nfft);
   }
-  dataCorr.resize(2 * nDelayBins + 1);
 
   // compute FFTW plans in constructor
   dataXi.resize(nfft);
@@ -128,44 +127,35 @@ Map<std::complex<double>> *Ambiguity::process(IqData *x, IqData *y)
 
     fftw_execute(fftZi);
 
-    // extract center of corr
+    // Extract the centre of the correlation straight into the map. The old
+    // dataCorr staging array copied 2*nDelayBins+1 values out of dataZi so
+    // that a single window could be read back out of it; that window is just
+    // dataZi at (j + delayMin), wrapped, so neither the staging array nor the
+    // intermediate corr vector is needed.
     for (uint16_t j = 0; j < nDelayBins; j++)
     {
-      dataCorr[j] = dataZi[nfft - nDelayBins + j];
+      const int64_t k = int64_t(j) + delayMin;
+      map->data[i][j] = dataZi[k < 0 ? k + nfft : k];
     }
-    for (uint16_t j = 0; j < nDelayBins + 1; j++)
-    {
-      dataCorr[j + nDelayBins] = dataZi[j];
-    }
-
-    // cast from std::complex to std::vector
-    corr.clear();
-    for (uint16_t j = 0; j < nDelayBins; j++)
-    {
-      corr.push_back(dataCorr[nDelayBins + delayMin + j - 1 + 1]);
-    }
-
-    map->set_row(i, corr);
   }
 
   // doppler processing
   for (uint16_t i = 0; i < nDelayBins; i++)
   {
-    delayProfile = map->get_col(i);
+    // Read and write the column in place. get_col() built and returned a fresh
+    // vector per delay bin, and set_col() took another by value, so a 301-deep
+    // column was copied four times over to be transformed once.
     for (uint16_t j = 0; j < nDopplerBins; j++)
     {
-      dataDoppler[j] = {delayProfile[j].real(), delayProfile[j].imag()};
+      dataDoppler[j] = map->data[j][i];
     }
 
     fftw_execute(fftDoppler);
 
-    corr.clear();
     for (uint16_t j = 0; j < nDopplerBins; j++)
     {
-      corr.push_back(dataDoppler[(j + int(nDopplerBins / 2) + 1) % nDopplerBins]);
+      map->data[j][i] = dataDoppler[(j + int(nDopplerBins / 2) + 1) % nDopplerBins];
     }
-
-    map->set_col(i, corr);
   }
 
   return map.get();

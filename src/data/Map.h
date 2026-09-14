@@ -51,13 +51,13 @@ public:
   /// @param i Index of row to update.
   /// @param row Data to update.
   /// @return Void.
-  void set_row(uint32_t i, std::vector<T> row);
+  void set_row(uint32_t i, const std::vector<T> &row);
 
   /// @brief Update a column in the 2D map.
   /// @param i Index of column to update.
   /// @param col Data to update.
   /// @return Void.
-  void set_col(uint32_t i, std::vector<T> col);
+  void set_col(uint32_t i, const std::vector<T> &col);
 
   /// @brief Create map metrics (noise power, dynamic range).
   /// @return Void.

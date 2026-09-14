@@ -21,7 +21,7 @@ Map<T>::Map(uint32_t _nRows, uint32_t _nCols)
 }
 
 template <class T>
-void Map<T>::set_row(uint32_t i, std::vector<T> row)
+void Map<T>::set_row(uint32_t i, const std::vector<T> &row)
 {
   //data[i].swap(row);
   for (uint32_t j = 0; j < nCols; j++)
@@ -31,7 +31,7 @@ void Map<T>::set_row(uint32_t i, std::vector<T> row)
 }
 
 template <class T>
-void Map<T>::set_col(uint32_t i, std::vector<T> col)
+void Map<T>::set_col(uint32_t i, const std::vector<T> &col)
 {
   for (uint32_t j = 0; j < nRows; j++)
   {
