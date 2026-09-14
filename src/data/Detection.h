@@ -62,6 +62,14 @@ public:
   /// @return JSON string.
   std::string delay_bin_to_km(std::string json, uint32_t fs);
 
+  /// @brief Serialise to JSON with the delay axis already in km.
+  /// @details Equivalent to delay_bin_to_km(to_json(timestamp), fs) but in a
+  /// single pass, without building or re-parsing a DOM.
+  /// @param timestamp Timestamp of the detections (ms).
+  /// @param fs Sampling frequency (Hz).
+  /// @return JSON string.
+  std::string to_json_km(uint64_t timestamp, uint32_t fs);
+
   /// @brief Append the detections to a save file.
   /// @param json JSON string of detections and metadata.
   /// @param path Path of file to save.

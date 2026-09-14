@@ -127,7 +127,21 @@ target_link_libraries(testClutterFft PRIVATE
 set_target_properties(testClutterFft PROPERTIES 
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
 
+add_executable(testJsonKm
+  test/unit/data/TestJsonKm.cpp
+  src/data/Map.cpp
+  src/data/Detection.cpp
+)
+# armadillo is linked only to pick up the vcpkg include path, which is
+# where rapidjson lives; RAPIDJSON_INCLUDE_DIRS is NOTFOUND in this build.
+target_link_libraries(testJsonKm PRIVATE 
+  armadillo
+)
+set_target_properties(testJsonKm PROPERTIES 
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
 # TODO: Unsure if will be using CTest.
 add_test(NAME testAmbiguity COMMAND testAmbiguity)
 add_test(NAME testTracker COMMAND testTracker)
 add_test(NAME testClutterFft COMMAND testClutterFft)
+add_test(NAME testJsonKm COMMAND testJsonKm)

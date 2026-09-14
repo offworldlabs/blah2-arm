@@ -84,6 +84,45 @@ std::string Detection::to_json(uint64_t timestamp)
   return strbuf.GetString();
 }
 
+std::string Detection::to_json_km(uint64_t timestamp, uint32_t fs)
+{
+  // Single pass, matching to_json() + delay_bin_to_km() byte for byte.
+  rapidjson::StringBuffer strbuf;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
+  writer.SetMaxDecimalPlaces(2);
+
+  writer.StartObject();
+  writer.Key("timestamp");
+  writer.Uint64(timestamp);
+
+  writer.Key("delay");
+  writer.StartArray();
+  for (size_t i = 0; i < delay.size(); i++)
+  {
+    writer.Double(1.0 * delay[i] * (Constants::c / (double)fs) / 1000);
+  }
+  writer.EndArray();
+
+  writer.Key("doppler");
+  writer.StartArray();
+  for (size_t i = 0; i < get_nDetections(); i++)
+  {
+    writer.Double(doppler[i]);
+  }
+  writer.EndArray();
+
+  writer.Key("snr");
+  writer.StartArray();
+  for (size_t i = 0; i < get_nDetections(); i++)
+  {
+    writer.Double(snr[i]);
+  }
+  writer.EndArray();
+  writer.EndObject();
+
+  return strbuf.GetString();
+}
+
 std::string Detection::delay_bin_to_km(std::string json, uint32_t fs)
 {
   rapidjson::Document document;
