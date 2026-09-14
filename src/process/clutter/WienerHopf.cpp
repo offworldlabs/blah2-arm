@@ -15,8 +15,11 @@ WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
     throw std::invalid_argument("Clutter filter needs a non-empty half-open delay range no longer than the CPI");
   nBins = static_cast<uint32_t>(taps);
   nSamples = _nSamples;
-  // Pad only the linear convolution; keep taps and circular correlations unchanged.
-  nFilter = blah2::nextFastFftLength(uint64_t(nSamples) + nBins + 1);
+  // Pad only the linear convolution; keep taps and circular correlations
+  // unchanged. The length is timed rather than derived: under
+  // fftw_plan_with_nthreads() the quickest size does not follow from the
+  // factorisation, and the ranking differs between machines and thread counts.
+  nFilter = blah2::fastestFftLength(uint64_t(nSamples) + nBins + 1);
 
   // initialise data
   A = arma::cx_mat(nBins, nBins);

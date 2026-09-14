@@ -1,8 +1,10 @@
 #include "process/clutter/WienerHopf.h"
 #include "process/meta/FftLength.h"
+#include <algorithm>
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <vector>
 
 using Complex = std::complex<double>;
 
@@ -20,8 +22,16 @@ static void run(unsigned samples, int first, int last) {
   const unsigned taps = last - first;
   IqData reference(samples), surveillance(samples);
   WienerHopf filter(first, last, samples);
-  require(filter.filter_fft_length() == blah2::nextFastFftLength(samples + taps + 1),
-    "Filter did not use the selected padded length");
+  // The length is timed at construction, so it is whichever candidate was
+  // quickest here rather than a fixed value. Both properties the convolution
+  // relies on must still hold.
+  const uint64_t minimum = uint64_t(samples) + taps + 1;
+  const std::vector<uint32_t> allowed = blah2::fftLengthCandidates(minimum);
+  require(filter.filter_fft_length() >= minimum,
+    "Filter FFT length is below the alias-free convolution length");
+  require(std::find(allowed.begin(), allowed.end(), filter.filter_fft_length())
+            != allowed.end(),
+    "Filter did not use one of the candidate padded lengths");
   std::mt19937 rng(9211);
   std::normal_distribution<double> random;
   for (int repeat = 0; repeat < 3; ++repeat) {
@@ -81,6 +91,41 @@ int main() {
       "200 ms convolution geometry changed");
     require(blah2::nextFastFftLength(1200211) == 1200500,
       "500 ms convolution geometry changed");
+
+    // The timed selector may return any candidate, so pin the properties the
+    // convolution depends on rather than a length that varies by machine.
+    for (uint64_t minimum : {uint64_t(97), uint64_t(4096), uint64_t(480211),
+                             uint64_t(1000411)}) {
+      const std::vector<uint32_t> candidates = blah2::fftLengthCandidates(minimum);
+      require(!candidates.empty(), "No candidate FFT lengths offered");
+      require(std::is_sorted(candidates.begin(), candidates.end()),
+        "Candidate FFT lengths are not sorted");
+      require(std::adjacent_find(candidates.begin(), candidates.end())
+                == candidates.end(),
+        "Candidate FFT lengths contain duplicates");
+      require(candidates.front() == minimum,
+        "Unpadded length is not among the candidates");
+      for (uint32_t candidate : candidates) {
+        require(candidate >= minimum, "Candidate is shorter than the minimum");
+        require(candidate == minimum || fast(candidate),
+          "Padded candidate is not an admissible FFT length");
+      }
+      require(std::find(candidates.begin(), candidates.end(),
+                        blah2::nextFastFftLength(minimum)) != candidates.end(),
+        "Smallest admissible length is not among the candidates");
+      const uint32_t timed = blah2::fastestFftLength(minimum);
+      require(std::find(candidates.begin(), candidates.end(), timed)
+                != candidates.end(),
+        "Timed FFT length is not one of the candidates");
+    }
+    require(blah2::fftLengthCandidates(1000411, 0.0).size() >= 1,
+      "Zero slack must still offer the unpadded length");
+    {
+      bool rejected = false;
+      try { (void)blah2::fftLengthCandidates(1000411, -0.5); }
+      catch (const std::invalid_argument&) { rejected = true; }
+      require(rejected, "Negative FFT length slack accepted");
+    }
     for (uint64_t invalid : {uint64_t(0), uint64_t(INT32_MAX),
                              uint64_t(INT32_MAX) + 1, UINT64_MAX}) {
       bool rejected = false;

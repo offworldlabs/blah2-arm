@@ -53,6 +53,7 @@ add_executable(blah2
   src/process/tracker/Tracker.cpp
   src/process/spectrum/SpectrumAnalyser.cpp
   src/process/meta/HammingNumber.cpp
+  src/process/meta/FftLength.cpp
   src/process/utility/Socket.cpp
   src/data/IqData.cpp
   src/data/Map.cpp
@@ -115,6 +116,7 @@ set_target_properties(testHammingNumber PROPERTIES
 add_executable(testClutterFft
   test/unit/process/clutter/TestClutterFft.cpp
   src/process/clutter/WienerHopf.cpp
+  src/process/meta/FftLength.cpp
   src/data/IqData.cpp
 )
 target_link_libraries(testClutterFft PRIVATE 
