@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <iostream>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <tuple>
 #include <vector>
@@ -75,7 +76,23 @@ static void run(unsigned samples, int first, int last) {
         matrix(row, col) = std::conj(matrix(row, col));
     const arma::cx_vec weights = arma::solve(matrix, b);
 
-    require(filter.process(&reference, &surveillance), "Full-rank fixture rejected");
+    // Capture anything the filter writes to cerr. Zero lag is sum |x[n]|^2 and
+    // lands on the diagonal of A, so it has to be exactly real or the matrix
+    // is not Hermitian and armadillo warns on every single CPI. The oracle
+    // below uses arma::solve, which does not care, and chol only warns rather
+    // than failing, so the return value cannot see it either. Watching cerr
+    // catches that and any other per-CPI complaint the filter might acquire.
+    //
+    // The single-transform code got a real zero lag for free from X * conj(X),
+    // whose imaginary part is exactly zero in IEEE. The block form multiplies
+    // two different sequences, so nothing forces that cancellation.
+    std::ostringstream captured;
+    std::streambuf* const previous = std::cerr.rdbuf(captured.rdbuf());
+    const bool accepted = filter.process(&reference, &surveillance);
+    std::cerr.rdbuf(previous);
+    require(captured.str().empty(), "Filter wrote to cerr during a healthy CPI");
+
+    require(accepted, "Full-rank fixture rejected");
     require(surveillance.get_length() == samples, "Output sample count changed");
     const auto filtered = surveillance.get_data();
     for (unsigned i = 0; i < samples; ++i) {
@@ -134,6 +151,37 @@ int main() {
     // length, both give a plausible-looking but wholly wrong answer, and both
     // survive a single-block test. These run several blocks, including a CPI
     // that is not a whole number of hops.
+    // The shipped geometry itself. Every case above is small enough that the
+    // roundoff this is watching for stays inside armadillo's Hermitian
+    // tolerance: the zero-lag imaginary residue only trips it past roughly 300
+    // blocks, and it is 611 at the shipped size. So a regression that spams a
+    // live radar with a warning on every CPI is invisible to all of them.
+    //
+    // No direct-convolution oracle here, that would be 410 million operations.
+    // The oracle cases above cover correctness; this covers scale.
+    {
+      const unsigned samples = 1000000;
+      const int first = -10, last = 400;
+      IqData reference(samples), surveillance(samples);
+      WienerHopf filter(first, last, samples);
+      std::mt19937 rng(4241);
+      std::normal_distribution<double> random;
+      for (unsigned i = 0; i < samples; ++i) {
+        reference.push_back({random(rng), random(rng)});
+        surveillance.push_back({random(rng), random(rng)});
+      }
+      std::ostringstream captured;
+      std::streambuf* const previous = std::cerr.rdbuf(captured.rdbuf());
+      const bool accepted = filter.process(&reference, &surveillance);
+      std::cerr.rdbuf(previous);
+      require(captured.str().empty(),
+        "Filter complained at the shipped geometry: zero lag is probably not exactly real");
+      require(accepted, "Shipped geometry rejected");
+      require(surveillance.get_length() == samples, "Output sample count changed");
+      std::cout << "PASS shipped geometry samples=" << samples << " taps="
+                << (last - first) << " block=" << filter.filter_fft_length() << '\n';
+    }
+
     for (const auto& geometry : {std::tuple<unsigned, int, int>{4096, -3, 5},
                                  {5000, 0, 16}, {5000, -20, 4}, {2500, 10, 20},
                                  {6143, -1, 31}})

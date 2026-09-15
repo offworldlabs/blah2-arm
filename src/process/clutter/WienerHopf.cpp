@@ -153,6 +153,20 @@ void WienerHopf::correlate()
     a[i] = std::conj(accumulatorA[i]) / (double)nBlock;
     b[i] = accumulatorB[i] / (double)nBlock;
   }
+
+  // Zero lag is sum |x[n]|^2, real by definition, and it lands on the diagonal
+  // of A, which has to be real for the matrix to be Hermitian and for
+  // arma::chol to accept it.
+  //
+  // The single-transform code got that for free: it formed X * conj(X), whose
+  // imaginary part is exactly zero in IEEE arithmetic (xy - yx), so the whole
+  // array was exactly real and so was its transform at index 0. Here the two
+  // sides of the product are different sequences, one windowed and one padded
+  // to the hop, so nothing forces the imaginary part to cancel and a roundoff
+  // residue survives. Left alone it makes armadillo warn on every CPI.
+  //
+  // Discarding it restores an exact property rather than approximating one.
+  a[0] = std::complex<double>(a[0].real(), 0.0);
 }
 
 // Apply the nBins-tap filter to the reference, writing the first nSamples
