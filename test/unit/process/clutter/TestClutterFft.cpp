@@ -1,10 +1,17 @@
-// The padded clutter convolution.
+// The block clutter filter.
 //
-// Two things need holding down. That the padded length is always at least the
-// alias-free convolution length, since anything shorter wraps and corrupts the
-// start of the output. And that the filter still computes the right answer,
-// checked against an independent direct convolution rather than against another
-// FFT, so a fault in the transform path cannot hide behind itself.
+// Two things need holding down. That the block length stays self-consistent
+// across every geometry, since a block at or below the tap count leaves no
+// valid outputs. And that the filter still computes the right answer, checked
+// against an independent direct convolution rather than against another FFT,
+// so a fault in the transform path cannot hide behind itself.
+//
+// The geometries below deliberately straddle the point where the block is
+// capped to the whole CPI. Anything short enough to run as a SINGLE block
+// leaves the partial-sum accumulation untested, and that is where this
+// formulation goes wrong: a correlation numerator taking the full window on
+// both sides, or a normalisation by the CPI length rather than the block
+// length, both survive a single-block test and are both badly wrong.
 #include "process/clutter/WienerHopf.h"
 #include "process/meta/FftLength.h"
 
@@ -14,6 +21,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 using Complex = std::complex<double>;
@@ -27,10 +35,15 @@ static void run(unsigned samples, int first, int last) {
   IqData reference(samples), surveillance(samples);
   WienerHopf filter(first, last, samples);
 
-  // The only property the convolution depends on: long enough to be alias-free.
-  const uint64_t minimum = uint64_t(samples) + taps + 1;
-  require(filter.filter_fft_length() >= minimum,
-    "Filter FFT length is below the alias-free convolution length");
+  // Overlap-save is alias-free per block rather than over the whole CPI, so
+  // the property to hold down is that a block is longer than the tap overlap
+  // it has to discard. A block at or below the tap count leaves no valid
+  // outputs and the hop would not advance.
+  const uint32_t block = filter.filter_fft_length();
+  require(block > taps, "Block length must exceed the tap count");
+  require(block - taps + 1 >= 1, "Hop must advance");
+  require(block <= uint64_t(samples) + taps,
+    "Block longer than the signal plus its overlap wastes the whole point");
 
   std::mt19937 rng(9211);
   std::normal_distribution<double> random;
@@ -80,42 +93,28 @@ static void run(unsigned samples, int first, int last) {
 
 int main() {
   try {
-    // The shipped geometry is the one the constant was measured for: 2 MS/s,
-    // 0.5 s CPI, clutter delay -10..400, so 1000000 + 410 + 1 points.
-    const uint64_t shipped = 1000411;
-    require(blah2::clutterFftLength(shipped) == blah2::kClutterFftLength,
-      "Shipped geometry no longer uses the measured length");
-    require(blah2::kClutterFftLength >= shipped,
-      "Measured length is shorter than the shipped geometry needs");
-    std::cout << "PASS shipped geometry uses " << blah2::kClutterFftLength << '\n';
+    // The block length the filter actually runs at. The shipped geometry must
+    // get the measured constant; anything that cannot (too few taps to fit the
+    // overlap, or a CPI shorter than a block) has to stay self-consistent
+    // rather than silently produce a block with no valid outputs.
+    require(blah2::clutterBlockLength(1000000, 410) == blah2::kClutterBlockLength,
+      "Shipped geometry no longer uses the measured block length");
+    for (uint32_t samples : {31u, 32u, 64u, 127u, 257u, 4096u, 1000000u})
+      for (uint32_t taps : {1u, 4u, 8u, 32u, 410u, 2048u, 5000u}) {
+        if (taps > samples) continue;
+        const uint32_t block = blah2::clutterBlockLength(samples, taps);
+        require(block > taps, "Block must exceed the tap count");
+        require(block <= uint64_t(samples) + taps, "Block longer than it can use");
+      }
+    std::cout << "PASS block length uses " << blah2::kClutterBlockLength << '\n';
 
-    // The guard. The constant is only right for the geometry it was measured
-    // at, so anything it does not cover falls back to the unpadded length,
-    // which is always alias-free and is what the code did before it existed.
-    require(blah2::clutterFftLength(blah2::kClutterFftLength) == blah2::kClutterFftLength,
-      "Exact fit rejected");
-    require(blah2::clutterFftLength(blah2::kClutterFftLength + 1)
-              == blah2::kClutterFftLength + 1,
-      "Geometry above the constant must not use it, that would alias");
-    require(blah2::clutterFftLength(200411) == 200411,
-      "A much smaller geometry must not be padded fivefold");
-    require(blah2::clutterFftLength(2000411) == 2000411,
-      "A larger geometry must fall back to unpadded");
-    for (uint64_t minimum : {uint64_t(1), uint64_t(97), uint64_t(200411),
-                             uint64_t(999999), shipped, uint64_t(2000411)})
-      require(blah2::clutterFftLength(minimum) >= minimum,
-        "Padded length below the alias-free minimum");
-    std::cout << "PASS geometry guard\n";
-
-    // A length outside what FFTW can index is a programming error, not a
-    // silently truncated transform.
-    for (uint64_t invalid : {uint64_t(0), uint64_t(INT32_MAX) + 1, UINT64_MAX}) {
+    for (auto bad : {std::pair<uint32_t, uint32_t>{0, 4}, {4, 0}}) {
       bool rejected = false;
-      try { (void)blah2::clutterFftLength(invalid); }
+      try { (void)blah2::clutterBlockLength(bad.first, bad.second); }
       catch (const std::invalid_argument&) { rejected = true; }
-      require(rejected, "Unrepresentable FFT geometry accepted");
+      require(rejected, "Degenerate block geometry accepted");
     }
-    std::cout << "PASS invalid geometry rejected\n";
+    std::cout << "PASS degenerate block geometry rejected\n";
 
     // Correctness across a spread of geometries, including positive delayMin,
     // which used to read the wrong sample: `i - delayMin` promoted to unsigned
@@ -126,6 +125,19 @@ int main() {
     run(128, -2, -1);
     run(31, -2, 2);
     run(32, 0, 32);  // tap count equal to the CPI sample count
+
+    // Everything above is short enough that the block length is capped at the
+    // whole CPI, so it only ever runs as ONE block. That leaves the partial-sum
+    // accumulation completely untested, which is precisely where the block
+    // formulation can go wrong: a correlation numerator taking the full window
+    // on both sides, or a normalisation by the CPI length instead of the block
+    // length, both give a plausible-looking but wholly wrong answer, and both
+    // survive a single-block test. These run several blocks, including a CPI
+    // that is not a whole number of hops.
+    for (const auto& geometry : {std::tuple<unsigned, int, int>{4096, -3, 5},
+                                 {5000, 0, 16}, {5000, -20, 4}, {2500, 10, 20},
+                                 {6143, -1, 31}})
+      run(std::get<0>(geometry), std::get<1>(geometry), std::get<2>(geometry));
 
     for (const auto& bounds : {std::pair<int, int>{0, 0}, {5, 2}, {0, 65},
                               {INT32_MIN, INT32_MAX}}) {

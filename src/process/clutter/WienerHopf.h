@@ -30,24 +30,34 @@ private:
   /// @brief Number of samples per CPI.
   uint32_t nSamples;
 
-  /// @brief Padded length of the convolution FFTs.
-  uint32_t nFilter;
+  /// @brief Length of each correlation and convolution block.
+  uint32_t nBlock;
+
+  /// @brief Samples of new signal consumed per block (nBlock - nBins + 1).
+  uint32_t nHop;
 
   /// @brief True if clutter filter processing is successful.
   bool success;
 
-  /// @brief FFTW plans for clutter filter processing.
+  /// @brief FFTW plans, all at the block length rather than the CPI length.
   /// @{
-  fftw_plan fftX, fftY, fftA, fftB, fftFiltX, fftFiltW, fftFilt;
+  fftw_plan fftBlockRef, fftBlockRefHop, fftBlockSur, ifftBlockA, ifftBlockB,
+      fftBlockTaps, fftBlockConv, ifftBlockConv;
   /// @}
 
-  /// @brief FFTW storage for clutter filter processing.
+  /// @brief Full-CPI storage: the shifted reference, the surveillance, and the
+  /// filter output. Allocated once, not per CPI: at the shipped geometry each
+  /// is 16 MB and the whole point of this class's rewrite was to stop moving
+  /// that much memory around.
   /// @{
-  std::complex<double> *dataX, *dataY, *dataOutX, *dataOutY, *dataA, *dataB, *filtX, *filtW, *filt;
+  std::complex<double> *dataX, *dataY, *dataFiltered;
   /// @}
 
-  /// @brief Deque storage for clutter filter processing.
+  /// @brief Block storage. Each of these is nBlock points, small enough to
+  /// stay in L2, which is the entire point of the block formulation.
   /// @{
+  std::complex<double> *blockRef, *blockRefHop, *blockSur, *blockA, *blockB,
+      *blockTaps, *blockConv;
   /// @}
 
   /// @brief Autocorrelation toeplitz matrix.
@@ -62,6 +72,16 @@ private:
   /// @brief Weights vector.
   arma::cx_vec w;
 
+  /// @brief Fill a and b with the circular correlations of the reference with
+  /// itself and with the surveillance, for lags 0 to nBins-1.
+  /// @return Void.
+  void correlate();
+
+  /// @brief Apply the nBins-tap weights to the reference.
+  /// @param out Destination for the first nSamples convolution outputs.
+  /// @return Void.
+  void convolve(std::complex<double> *out);
+
 public:
   /// @brief Constructor.
   /// @param delayMin Minimum clutter filter delay (bins).
@@ -70,9 +90,9 @@ public:
   /// @return The object.
   WienerHopf(int32_t delayMin, int32_t delayMax, uint32_t nSamples);
 
-  /// @brief Padded length the convolution FFTs are planned at.
+  /// @brief Length the correlation and convolution blocks are planned at.
   /// @return Number of points.
-  uint32_t filter_fft_length() const { return nFilter; }
+  uint32_t filter_fft_length() const { return nBlock; }
 
   /// @brief Destructor.
   /// @return Void.
