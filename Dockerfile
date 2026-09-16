@@ -2,6 +2,8 @@ FROM debian:bookworm as blah2_env
 LABEL maintainer="Jehan <jehan.azad@gmail.com>"
 LABEL org.opencontainers.image.source https://github.com/30hours/blah2
 
+ARG OWL_GPU_FIR=OFF
+
 WORKDIR /opt/blah2
 ADD lib lib
 
@@ -31,6 +33,19 @@ RUN apt-get update && apt-get install -y \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
+
+# The default image remains CPU-only. An explicit GPU build supplies the
+# selected Vulkan toolchain and a detached, clean VkFFT source checkout; it
+# never copies a host driver into the image.
+RUN if [ "$OWL_GPU_FIR" = "ON" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        libvulkan-dev glslang-dev glslang-tools \
+      && rm -rf /var/lib/apt/lists/* \
+      && git clone https://github.com/DTolm/VkFFT.git /opt/VkFFT \
+      && git -C /opt/VkFFT checkout --detach 066a17c17068c0f11c9298d848c2976c71fad1c1 \
+      && test "$(git -C /opt/VkFFT rev-parse HEAD)" = "066a17c17068c0f11c9298d848c2976c71fad1c1" \
+      && test -z "$(git -C /opt/VkFFT status --porcelain)"; \
+    fi
 
 # Build FFTW from source with ARM NEON optimizations (2-4x faster FFTs)
 # Building both double and single precision for flexibility
@@ -87,11 +102,14 @@ RUN export ARCH=$(uname -m) \
 
     && cp ${ARCH}/libsdrplay_api.so.${MAJVER} /usr/local/lib/libsdrplay_api.so.${MAJVER} \
     && cp inc/* /usr/local/include \
-    && chmod 644 /usr/local/lib/libsdrplay_api.so.${MAJVER} 
+    && chmod 644 /usr/local/lib/libsdrplay_api.so.${MAJVER} \
+    && ldconfig
 
 
 FROM blah2_env as blah2
 LABEL maintainer="Jehan <jehan.azad@gmail.com>"
+
+ARG OWL_GPU_FIR=OFF
 
 WORKDIR /opt/blah2
 
@@ -104,7 +122,9 @@ ADD CMakeLists.txt CMakePresets.json Doxyfile ./
 RUN set -ex \
     && mkdir -p build \
     && cd build \
-    && cmake -S .. --preset prod-release \
+    && GPU_CMAKE_ARGS="" \
+    && if [ "$OWL_GPU_FIR" = "ON" ]; then GPU_CMAKE_ARGS="-DOWL_GPU_FIR=ON -DOWL_VKFFT_ROOT=/opt/VkFFT"; fi \
+    && cmake -S .. --preset prod-release ${GPU_CMAKE_ARGS} \
         -DCMAKE_PREFIX_PATH=$(echo /opt/blah2/lib/vcpkg_installed/*/share) \
     && cd prod-release \
     && make \
@@ -124,19 +144,10 @@ RUN set -ex \
 # missing or empty test directory fails the build too, rather than passing
 # silently the way the old step did.
 RUN set -eu; \
-    cd /opt/blah2/bin/test/unit; \
-    if [ -z "$(ls -A .)" ]; then echo "FAIL: no unit tests were built"; exit 1; fi; \
+    test -d /opt/blah2/bin/test/unit; \
+    test -n "$(find /opt/blah2/bin/test/unit -maxdepth 1 -type f -perm -111 -print -quit)"; \
     export BLAH2_FFT_CACHE=/tmp/blah2-fft-length.cache; \
-    count=0; \
-    for t in *; do \
-      if [ -f "$t" ] && [ -x "$t" ]; then \
-        echo "==== $t ===="; \
-        ./"$t"; \
-        count=$((count+1)); \
-      fi; \
-    done; \
-    if [ "$count" -eq 0 ]; then echo "FAIL: no executable unit tests found"; exit 1; fi; \
-    echo "==== $count unit test binaries passed ===="
+    ctest --test-dir /opt/blah2/build/prod-release --output-on-failure
 
 WORKDIR /blah2/bin
 
@@ -149,6 +160,8 @@ FROM debian:bookworm-slim as runtime
 LABEL maintainer="Jehan <jehan.azad@gmail.com>"
 LABEL org.opencontainers.image.source https://github.com/30hours/blah2
 
+ARG OWL_GPU_FIR=OFF
+
 # Install only runtime dependencies (no dev packages, no compilers)
 # Note: libfftw3-double3 removed - using NEON-optimized build from source
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -156,6 +169,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# GPU builds own their complete V3D userspace driver. The host supplies only
+# the DRM kernel device; never bind host Mesa libraries into this image.
+# Pin the Bookworm backport; validate each packaged version on the target GPU.
+ARG OWL_MESA_VERSION=25.0.7-2~bpo12+1
+RUN if [ "$OWL_GPU_FIR" = "ON" ]; then \
+      test "$(dpkg --print-architecture)" = arm64 \
+      && printf '%s\n' 'deb http://deb.debian.org/debian bookworm-backports main' \
+        > /etc/apt/sources.list.d/owl-gpu-backports.list \
+      && apt-get update && apt-get install -y --no-install-recommends \
+        libvulkan1 glslang-dev \
+      && apt-get install -y --no-install-recommends -t bookworm-backports \
+        "mesa-vulkan-drivers=${OWL_MESA_VERSION}" \
+      && test -f /usr/share/vulkan/icd.d/broadcom_icd.json \
+      && test -f /usr/lib/aarch64-linux-gnu/libvulkan_broadcom.so \
+      && ldd /usr/lib/aarch64-linux-gnu/libvulkan_broadcom.so > /tmp/owl-v3d-ldd \
+      && ! grep -q 'not found' /tmp/owl-v3d-ldd \
+      && rm /tmp/owl-v3d-ldd \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # Copy NEON-optimized FFTW libraries from build stage
 COPY --from=blah2_env /usr/local/lib/libfftw3.so* /usr/local/lib/

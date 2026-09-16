@@ -43,6 +43,9 @@ public:
   /// @return Ambiguity map data of IQ samples.
   Map<Complex> *process(IqData *x, IqData *y);
 
+  // Exclusive, fully replaced CPI storage. Zero-centered, distinct full inputs
+  // remain unchanged so the next capture can reuse their allocation.
+  Map<Complex> *process_owned(IqData *x, IqData *y);
   double get_doppler_middle() const;
 
   uint16_t get_n_delay_bins() const;
@@ -58,6 +61,7 @@ public:
   uint32_t get_n_samples() const;
 
 private:
+  Map<Complex> *process_impl(IqData *x, IqData *y, bool retain);
   /// @brief Minimum delay (bins).
   int32_t delayMin;
 
@@ -102,6 +106,7 @@ private:
   std::vector<Complex> dataXi;
   std::vector<Complex> dataYi;
   std::vector<Complex> dataZi;
+  std::vector<Complex> dataCorr;
   std::vector<Complex> dataDoppler;
   /// @}
 
@@ -110,6 +115,8 @@ private:
 
   /// @brief Vector storage for ambiguity processing
   /// @{
+  std::vector<Complex> corr;
+  std::vector<Complex> delayProfile;
   /// @}
 
   /// @brief Map to store result.

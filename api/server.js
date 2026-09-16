@@ -7,6 +7,8 @@ const http = require('http');
 const bistatic = require('./bistatic.js');
 const { extrapolateAdsbData } = require('./lib/extrapolation');
 const retuneLib = require('./lib/retune');
+const updates = require('./stash/updates.js');
+const jsonFrames = require('./json-frames.js');
 
 // parse config file
 var config;
@@ -85,17 +87,6 @@ var track = '';
 var timestamp = '';
 var timing = '';
 var iqdata = '';
-// Initialised, not bare `var`. Each of these accumulates a socket's bytes with
-// `data_x = data_x + msg`, so an undefined seed prefixes the literal string
-// "undefined" onto the first message after every start. On the detection socket
-// that made JSON.parse throw, so the first frame was always discarded and
-// /api/detection briefly served the garbage; the same applied to all six.
-var data_map = '';
-var data_detection = '';
-var data_tracker = '';
-var data_timestamp = '';
-var data_timing = '';
-var data_iqdata = '';
 var capture = false;
 
 // api server
@@ -113,6 +104,10 @@ app.get('/', (req, res) => {
 });
 app.get('/api/map', (req, res) => {
   res.send(map);
+});
+// Same map prefix used by the recovery watchdog; no independent heartbeat.
+app.get('/api/map-health', (req, res) => {
+  res.type('text/plain').send(map.slice(0, 23));
 });
 app.get('/api/detection', (req, res) => {
   res.send(detection);
@@ -317,149 +312,116 @@ app.listen(PORT, HOST, () => {
   console.log(`Running on http://${HOST}:${PORT}`);
 });
 
-// tcp listener map
-const server_map = net.createServer((socket)=>{
-    socket.on("data",(msg)=>{
-        data_map = data_map + msg.toString();
-        if (data_map.slice(-1) === "}")
-        {
-          map = data_map;
-          data_map = '';
+// Payload streams arrive independently; do not gate on timestamp-stream ordering.
+function listenObjects(port, onFrame) {
+  const paused = new Set();
+  const server = net.createServer(socket => {
+    const feed = jsonFrames(onFrame);
+    function consume(chunk) {
+      try {
+        if (feed(chunk) === false) {
+          socket.pause();
+          paused.add(resume);
+        } else {
+          paused.delete(resume);
+          socket.resume();
         }
-    });
-    socket.on("close",()=>{
-        console.log("Connection closed.");
-    })
+      } catch (e) {
+        paused.delete(resume);
+        console.error(e.message);
+        socket.destroy();
+      }
+    }
+    function resume() {
+      consume(Buffer.alloc(0));
+    }
+    socket.on('data', consume);
+    socket.on('close', () => paused.delete(resume));
+    socket.on('error', e => console.error(e.message));
+  });
+  server.listen(port);
+  // Snapshot: resuming can remove/re-add callbacks while their work is queued.
+  return () => Array.from(paused).forEach(resume => resume());
+}
+listenObjects(config.network.ports.map, body => {
+  map = body;
+  updates.publish('map', body);
 });
-server_map.listen(config.network.ports.map);
-
-// tcp listener detection
-let processingDetection = false;
-const server_detection = net.createServer((socket)=>{
-  socket.on("data", async (msg)=>{
-      data_detection = data_detection + msg.toString();
-      if (data_detection.slice(-1) === "}" && !processingDetection)
-      {
-        processingDetection = true;
-        try {
-          const det = JSON.parse(data_detection);
-          if (adsbTruthAvailable()) {
-            const aircraft = await getCachedAircraft();
-            det.adsb = det.delay.map((delay, idx) => {
-              const doppler = det.doppler[idx];
-              let bestMatch = null;
-              let bestScore = Infinity;
-              for (const ac of aircraft) {
-                if (!ac.lat || !ac.lon || (!ac.alt_geom && !ac.alt_baro)) continue;
-                const expected_delay = bistatic.computeBistaticDelay(ac,
-                  config.location.rx, config.location.tx);
-                const expected_doppler = bistatic.computeBistaticDoppler(ac,
-                  config.location.rx, config.location.tx, config.capture.fc);
-                if (expected_delay === null || expected_doppler === null) continue;
-                const delay_err = Math.abs(delay - expected_delay);
-                const doppler_err = Math.abs(doppler - expected_doppler);
-                const delay_tol = config.truth.adsb.delay_tolerance || 2.0;
-                const doppler_tol = config.truth.adsb.doppler_tolerance || 5.0;
-                if (delay_err < delay_tol && doppler_err < doppler_tol) {
-                  const score = delay_err / delay_tol + doppler_err / doppler_tol;
-                  if (score < bestScore) {
-                    bestScore = score;
-                    bestMatch = {
-                      hex: ac.hex,
-                      lat: ac.lat,
-                      lon: ac.lon,
-                      alt: ac.alt_geom ?? ac.alt_baro,
-                      gs: ac.gs,
-                      track: ac.track,
-                      expected_delay: Math.round(expected_delay * 100) / 100,
-                      expected_doppler: Math.round(expected_doppler * 100) / 100,
-                      delay_residual: Math.round((delay - expected_delay) * 100) / 100,
-                      doppler_residual: Math.round((doppler - expected_doppler) * 100) / 100
-                    };
-                  }
-                }
+listenObjects(config.network.ports.iqdata, body => {
+  iqdata = body;
+  updates.publish('iqdata', body);
+});
+listenObjects(config.network.ports.timing, body => {
+  timing = body;
+  updates.publish('timing', body);
+});
+listenObjects(config.network.ports.track, body => { track = body; });
+let detectionChain = Promise.resolve();
+let pendingDetections = 0;
+const resumeDetections = listenObjects(config.network.ports.detection, body => {
+  if (pendingDetections >= 32) return false;
+  ++pendingDetections;
+  detectionChain = detectionChain.then(async () => {
+    try {
+      const det = JSON.parse(body);
+      if (adsbTruthAvailable()) {
+        const aircraft = await getCachedAircraft();
+        det.adsb = det.delay.map((delay, idx) => {
+          const doppler = det.doppler[idx];
+          let bestMatch = null;
+          let bestScore = Infinity;
+          for (const ac of aircraft) {
+            if (!ac.lat || !ac.lon || (!ac.alt_geom && !ac.alt_baro)) continue;
+            const expected_delay = bistatic.computeBistaticDelay(ac,
+              config.location.rx, config.location.tx);
+            const expected_doppler = bistatic.computeBistaticDoppler(ac,
+              config.location.rx, config.location.tx, config.capture.fc);
+            if (expected_delay === null || expected_doppler === null) continue;
+            const delay_err = Math.abs(delay - expected_delay);
+            const doppler_err = Math.abs(doppler - expected_doppler);
+            const delay_tol = config.truth.adsb.delay_tolerance || 2.0;
+            const doppler_tol = config.truth.adsb.doppler_tolerance || 5.0;
+            if (delay_err < delay_tol && doppler_err < doppler_tol) {
+              const score = delay_err / delay_tol + doppler_err / doppler_tol;
+              if (score < bestScore) {
+                bestScore = score;
+                bestMatch = {
+                  hex: ac.hex,
+                  lat: ac.lat,
+                  lon: ac.lon,
+                  alt: ac.alt_geom ?? ac.alt_baro,
+                  gs: ac.gs,
+                  track: ac.track,
+                  expected_delay: Math.round(expected_delay * 100) / 100,
+                  expected_doppler: Math.round(expected_doppler * 100) / 100,
+                  delay_residual: Math.round((delay - expected_delay) * 100) / 100,
+                  doppler_residual: Math.round((doppler - expected_doppler) * 100) / 100
+                };
               }
-              return bestMatch;
-            });
+            }
           }
-          detection = JSON.stringify(det);
-          // Forward to external tracker if enabled
-          forwardToTracker(detection);
-        } catch (e) {
-          console.error('Detection processing error:', e.message);
-          detection = data_detection;
-        } finally {
-          data_detection = '';
-          processingDetection = false;
-        }
+          return bestMatch;
+        });
       }
-  });
-  socket.on("close",()=>{
-      console.log("Connection closed.");
-  })
-});
-server_detection.listen(config.network.ports.detection);
+      detection = JSON.stringify(det);
+      // Forward to external tracker if enabled
+      forwardToTracker(detection);
 
-// tcp listener tracker
-const server_tracker = net.createServer((socket)=>{
-  socket.on("data",(msg)=>{
-      data_tracker = data_tracker + msg.toString();
-      if (data_tracker.slice(-1) === "}")
-      {
-        track = data_tracker;
-        data_tracker = '';
-      }
+      updates.publish('detection', detection);
+    } catch (e) {
+      console.error('Detection processing error:', e.message);
+    } finally {
+      --pendingDetections;
+      resumeDetections();
+    }
   });
-  socket.on("close",()=>{
-      console.log("Connection closed.");
-  })
 });
-server_tracker.listen(config.network.ports.track);
-
-// tcp listener timestamp
-const server_timestamp = net.createServer((socket)=>{
-  socket.on("data",(msg)=>{
-    data_timestamp = data_timestamp + msg.toString();
-    timestamp = data_timestamp;
-    data_timestamp = '';
-  });
-  socket.on("close",()=>{
-      console.log("Connection closed.");
-  })
+// Legacy timestamp wire format has no delimiter; endpoint remains unchanged.
+const server_timestamp = net.createServer(socket => {
+  socket.on('data', msg => { timestamp = msg.toString(); });
+  socket.on('error', e => console.error(e.message));
 });
 server_timestamp.listen(config.network.ports.timestamp);
-
-// tcp listener timing
-const server_timing = net.createServer((socket)=>{
-  socket.on("data",(msg)=>{
-    data_timing = data_timing + msg.toString();
-    if (data_timing.slice(-1) === "}")
-    {
-      timing = data_timing;
-      data_timing = '';
-    }
-  });
-  socket.on("close",()=>{
-      console.log("Connection closed.");
-  })
-});
-server_timing.listen(config.network.ports.timing);
-
-// tcp listener iqdata metadata
-const server_iqdata = net.createServer((socket)=>{
-  socket.on("data",(msg)=>{
-    data_iqdata = data_iqdata + msg.toString();
-    if (data_iqdata.slice(-1) === "}")
-    {
-      iqdata = data_iqdata;
-      data_iqdata = '';
-    }
-  });
-  socket.on("close",()=>{
-      console.log("Connection closed.");
-  })
-});
-server_iqdata.listen(config.network.ports.iqdata);
 
 let aircraftCache = [];
 let lastFetchTime = 0;

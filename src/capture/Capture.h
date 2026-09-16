@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <atomic>
 #include <ryml/ryml.hpp>
 #include <ryml/ryml_std.hpp> // optional header, provided for std:: interop
 #include <c4/format.hpp> // needed for the examples below
@@ -47,6 +48,9 @@ private:
   /// is retried indefinitely.
   long attemptedRetuneGeneration = 0;
   int retuneAttempts = 0;
+
+  std::atomic<bool> stopRequested{false};
+  std::atomic<Source *> activeDevice{nullptr};
 
 public:
 
@@ -89,6 +93,9 @@ public:
   /// @param file Absolute path of file to replay.
   /// @return Void.
   void set_replay(bool loop, std::string file);
+
+  /// @brief Stop a running source; process() remains responsible for teardown.
+  void request_stop() noexcept;
 
 };
 

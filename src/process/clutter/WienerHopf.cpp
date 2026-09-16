@@ -1,178 +1,480 @@
 #include "WienerHopf.h"
-#include "process/meta/FftLength.h"
+
+#include "BulkRotation.h"
+#include "CorrelationWorker.h"
+#include "HermitianToeplitz.h"
+#include "ToeplitzAudit.h"
+#ifdef OWL_ENABLE_GPU_FIR
+#include "gpu/OwlGpuFilter.h"
+#endif
+
+#include <armadillo>
+#include <fftw3.h>
+
+#include <algorithm>
 #include <complex>
-#include <stdexcept>
+#include <cstdlib>
 #include <iostream>
-#include <vector>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <utility>
 
-// constructor
-WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
+#ifdef OWL_CLUTTER_TEST_PLAN_FAILURE
+namespace owl_clutter_test {
+thread_local unsigned failAtPlan = 0;
+thread_local unsigned planOrdinal = 0;
+void failNextConstructionAtPlan(unsigned ordinal)
 {
-  // input
-  delayMin = _delayMin;
-  delayMax = _delayMax;
-  const int64_t taps = int64_t(delayMax) - delayMin;
-  if (!_nSamples || taps <= 0 || uint64_t(taps) > _nSamples)
-    throw std::invalid_argument("Clutter filter needs a non-empty half-open delay range no longer than the CPI");
-  nBins = static_cast<uint32_t>(taps);
-  nSamples = _nSamples;
-  // Pad only the linear convolution; taps and circular correlations are
-  // unchanged. Any length at or above nSamples + nBins - 1 is alias-free and
-  // only the first nSamples outputs are read, so rounding up is free.
-  nFilter = blah2::clutterFftLength(uint64_t(nSamples) + nBins + 1);
+  failAtPlan = ordinal;
+  planOrdinal = 0;
+}
+}  // namespace owl_clutter_test
+#endif
 
-  // initialise data
-  A = arma::cx_mat(nBins, nBins);
-  a = arma::cx_vec(nBins);
-  b = arma::cx_vec(nBins);
-  w = arma::cx_vec(nBins);
+namespace {
 
-  // compute FFTW plans in constructor
-  dataX = new std::complex<double>[nSamples];
-  dataY = new std::complex<double>[nSamples];
-  dataOutX = new std::complex<double>[nSamples];
-  dataOutY = new std::complex<double>[nSamples];
-  dataA = new std::complex<double>[nSamples];
-  dataB = new std::complex<double>[nSamples];
-  filtX = new std::complex<double>[nFilter];
-  filtW = new std::complex<double>[nFilter];
-  filt = new std::complex<double>[nFilter];
-  fftX = fftw_plan_dft_1d(nSamples, reinterpret_cast<fftw_complex *>(dataX),
-                          reinterpret_cast<fftw_complex *>(dataOutX), FFTW_FORWARD, FFTW_ESTIMATE);
-  fftY = fftw_plan_dft_1d(nSamples, reinterpret_cast<fftw_complex *>(dataY),
-                          reinterpret_cast<fftw_complex *>(dataOutY), FFTW_FORWARD, FFTW_ESTIMATE);
-  fftA = fftw_plan_dft_1d(nSamples, reinterpret_cast<fftw_complex *>(dataA),
-                          reinterpret_cast<fftw_complex *>(dataA), FFTW_BACKWARD, FFTW_ESTIMATE);
-  fftB = fftw_plan_dft_1d(nSamples, reinterpret_cast<fftw_complex *>(dataB),
-                          reinterpret_cast<fftw_complex *>(dataB), FFTW_BACKWARD, FFTW_ESTIMATE);
-  fftFiltX = fftw_plan_dft_1d(nFilter, reinterpret_cast<fftw_complex *>(filtX),
-                              reinterpret_cast<fftw_complex *>(filtX), FFTW_FORWARD, FFTW_ESTIMATE);
-  fftFiltW = fftw_plan_dft_1d(nFilter, reinterpret_cast<fftw_complex *>(filtW),
-                              reinterpret_cast<fftw_complex *>(filtW), FFTW_FORWARD, FFTW_ESTIMATE);
-  fftFilt = fftw_plan_dft_1d(nFilter, reinterpret_cast<fftw_complex *>(filt),
-                             reinterpret_cast<fftw_complex *>(filt), FFTW_BACKWARD, FFTW_ESTIMATE);
+using Complex = std::complex<double>;
+constexpr uint32_t kFilterBatch = 4;
+
+bool useGpuFir()
+{
+  const char* value = std::getenv("OWL_GPU_FILTER_PERCENT");
+  if (!value || std::string(value) == "0") return false;
+  if (std::string(value) == "50")
+  {
+#ifdef OWL_ENABLE_GPU_FIR
+    return true;
+#else
+    throw std::runtime_error("GPU FIR requested but this build has OWL_GPU_FIR=OFF");
+#endif
+  }
+  throw std::invalid_argument("OWL_GPU_FILTER_PERCENT must be 0 or 50");
 }
 
-WienerHopf::~WienerHopf()
+#ifdef OWL_ENABLE_GPU_FIR
+struct GpuCycle
 {
-  fftw_destroy_plan(fftX);
-  fftw_destroy_plan(fftY);
-  fftw_destroy_plan(fftA);
-  fftw_destroy_plan(fftB);
-  fftw_destroy_plan(fftFiltX);
-  fftw_destroy_plan(fftFiltW);
-  fftw_destroy_plan(fftFilt);
+  OwlGpuFilter* gpu;
+  ~GpuCycle() { if (gpu) gpu->abort(); }
+};
+#endif
+
+uint32_t powerOfTwoLength(uint64_t minimum, uint32_t floor,
+                          const char* error)
+{
+  uint32_t length = floor;
+  while (uint64_t(length) < minimum)
+  {
+    if (length > uint32_t(std::numeric_limits<int>::max()) / 2)
+      throw std::invalid_argument(error);
+    length *= 2;
+  }
+  return length;
 }
 
-bool WienerHopf::process(IqData *x, IqData *y)
+unsigned planningFlags()
 {
-  uint32_t i, j;
-  // Views, not copies: each of these was 16 MB and ~31,000 allocations a CPI.
-  // Both are read out into dataX/dataY immediately below and not touched
-  // again, so the later y->clear() cannot be observed through yData.
-  const std::deque<std::complex<double>> &xData = x->view_data();
-  const std::deque<std::complex<double>> &yData = y->view_data();
+  const char* value = std::getenv("OWL_CLUTTER_PLAN");
+  if (!value || std::string(value) == "estimate") return FFTW_ESTIMATE;
+  if (std::string(value) == "measure") return FFTW_MEASURE;
+  throw std::invalid_argument(
+      "OWL_CLUTTER_PLAN must be 'estimate' or 'measure'");
+}
 
-  // change deque to std::complex
-  for (i = 0; i < nSamples; i++)
+bool denseOnly()
+{
+  const char* value = std::getenv("OWL_CLUTTER_DENSE_ONLY");
+  if (!value || std::string(value) == "0") return false;
+  if (std::string(value) == "1") return true;
+  throw std::invalid_argument("OWL_CLUTTER_DENSE_ONLY must be '0' or '1'");
+}
+
+bool useCorrelationWorker()
+{
+  const char* value = std::getenv("OWL_CLUTTER_CORR_WORKERS");
+  if (!value || std::string(value) == "1") return false;
+  if (std::string(value) == "2") return true;
+  throw std::invalid_argument(
+      "OWL_CLUTTER_CORR_WORKERS must be '1' or '2'");
+}
+
+std::mutex& plannerMutex()
+{
+  static std::mutex value;
+  return value;
+}
+
+void initialiseFftwThreads()
+{
+  static std::once_flag once;
+  static bool ready = false;
+  std::call_once(once, [] { ready = fftw_init_threads() != 0; });
+  if (!ready) throw std::runtime_error("FFTW thread initialisation failed");
+}
+
+struct FftwFree
+{
+  void operator()(Complex* value) const { fftw_free(value); }
+};
+using Buffer = std::unique_ptr<Complex, FftwFree>;
+
+Buffer allocate(uint64_t count)
+{
+  if (!count || count > std::numeric_limits<size_t>::max() / sizeof(Complex))
+    throw std::invalid_argument("Clutter buffer size is not representable");
+  Buffer result(static_cast<Complex*>(fftw_malloc(sizeof(Complex) * count)));
+  if (!result) throw std::bad_alloc();
+  return result;
+}
+
+struct PlanFree
+{
+  void operator()(fftw_plan_s* value) const
   {
-    // Signed arithmetic: `i - delayMin` promotes to unsigned, so a positive
-    // delayMin wraps at 2^32 and lands on the wrong sample.
-    const int64_t shifted = (int64_t(i) - delayMin) % int64_t(nSamples);
-    dataX[i] = xData[shifted < 0 ? shifted + nSamples : shifted];
-    dataY[i] = yData[i];
+    if (value) fftw_destroy_plan(value);
+  }
+};
+using Plan = std::unique_ptr<fftw_plan_s, PlanFree>;
+static_assert(std::is_nothrow_move_assignable<Plan>::value,
+              "Completed FFTW plan transfer must not throw");
+
+Plan checkedPlan(fftw_plan value)
+{
+#ifdef OWL_CLUTTER_TEST_PLAN_FAILURE
+  if (owl_clutter_test::failAtPlan &&
+      ++owl_clutter_test::planOrdinal == owl_clutter_test::failAtPlan)
+  {
+    // Simulate FFTW returning null after earlier plans succeeded. The real
+    // plan returned by FFTW is released here while the planner lock is held.
+    if (value) fftw_destroy_plan(value);
+    throw std::runtime_error("Injected clutter FFT plan failure");
+  }
+#endif
+  if (!value) throw std::runtime_error("FFTW could not create clutter plan");
+  return Plan(value);
+}
+
+}  // namespace
+
+struct WienerHopf::Impl
+{
+  const int32_t delayMin;
+  const uint32_t taps;
+  const uint32_t samples;
+  const uint32_t correlationLength;
+  const uint32_t filterLength;
+  const bool forceDense;
+  const bool workerEnabled;
+#ifdef OWL_ENABLE_GPU_FIR
+  std::unique_ptr<OwlGpuFilter> gpu;
+#endif
+
+  arma::cx_mat matrix;
+  arma::cx_vec autocorrelation;
+  arma::cx_vec crosscorrelation;
+  arma::cx_vec weights;
+
+  Buffer dataX;
+  Buffer dataY;
+  Buffer correlationBuffer;
+  Buffer correlationA;
+  Buffer correlationB;
+  Buffer filterX;
+  Buffer filterW;
+  Buffer filterOutput;
+
+  Plan correlationForward;
+  Plan correlationInverseA;
+  Plan correlationInverseB;
+  Plan filterForwardX;
+  Plan filterForwardW;
+  Plan filterInverse;
+
+  // Declared after every borrowed plan and input buffer. The destructor also
+  // resets it explicitly before destroying plans, including outstanding work.
+  std::unique_ptr<owl_corr::Worker> worker;
+
+  static uint32_t validateTaps(int32_t first, int32_t last,
+                               uint32_t sampleCount)
+  {
+    const int64_t count = int64_t(last) - first;
+    if (!sampleCount ||
+        sampleCount > uint32_t(std::numeric_limits<int>::max()) ||
+        count <= 0 || uint64_t(count) > sampleCount)
+      throw std::invalid_argument(
+          "Clutter filter needs a non-empty half-open delay range no longer "
+          "than the CPI");
+    return static_cast<uint32_t>(count);
   }
 
-  // pre-compute FFT of signals
-  fftw_execute(fftX);
-  fftw_execute(fftY);
-
-  // auto-correlation matrix A
-  for (i = 0; i < nSamples; i++)
+  Impl(int32_t firstDelay, int32_t lastDelay, uint32_t sampleCount)
+      : delayMin(firstDelay),
+        taps(validateTaps(firstDelay, lastDelay, sampleCount)),
+        samples(sampleCount),
+        correlationLength(powerOfTwoLength(
+            uint64_t(taps) * 2, 4096, "Correlation block FFT too large")),
+        filterLength(powerOfTwoLength(
+            uint64_t(taps) * 2, 1024, "Clutter block FFT too large")),
+        forceDense(denseOnly()),
+        workerEnabled(useCorrelationWorker()),
+        matrix(taps, taps),
+        autocorrelation(taps),
+        crosscorrelation(taps),
+        weights(taps),
+        dataX(allocate(samples)),
+        dataY(allocate(samples)),
+        correlationBuffer(allocate(uint64_t(correlationLength) * 3)),
+        correlationA(allocate(correlationLength)),
+        correlationB(allocate(correlationLength)),
+        filterX(allocate(uint64_t(filterLength) * kFilterBatch)),
+        filterW(allocate(filterLength)),
+        filterOutput(allocate(uint64_t(filterLength) * kFilterBatch))
   {
-    dataA[i] = (dataOutX[i] * std::conj(dataOutX[i]));
-  }
-  fftw_execute(fftA);
-  for (i = 0; i < nBins; i++)
-  {
-    a[i] = std::conj(dataA[i]) / (double)nSamples;
-  }
-  A = arma::toeplitz(a);
-
-  // conjugate upper diagonal as arma does not
-  for (i = 0; i < nBins; i++)
-  {
-    for (j = 0; j < nBins; j++)
+    const bool gpuRequested = useGpuFir();
+#ifdef OWL_ENABLE_GPU_FIR
+    // GPU setup may throw. Complete it before FFTW plans are transferred to
+    // members, whose exceptional cleanup must remain under the planner lock.
+    std::unique_ptr<OwlGpuFilter> newGpu;
+    if (gpuRequested) newGpu = std::make_unique<OwlGpuFilter>(samples, taps);
+#else
+    (void)gpuRequested;
+#endif
+    initialiseFftwThreads();
+    const unsigned flags = planningFlags();
     {
-      if (i > j)
-      {
-        A(i, j) = std::conj(A(i, j));
-      }
+      std::lock_guard<std::mutex> lock(plannerMutex());
+      // Planning is deliberately single-threaded. The optional second
+      // executor only runs an already-created forward plan. Keep each plan in
+      // a local owner until every plan and the worker are constructed. On any
+      // exception these locals are destroyed before the lock guard unwinds;
+      // member-plan cleanup cannot race another instance's FFTW planning.
+      fftw_plan_with_nthreads(1);
+      int correlation = static_cast<int>(correlationLength);
+      Plan newCorrelationForward = checkedPlan(fftw_plan_many_dft(
+          1, &correlation, 3,
+          reinterpret_cast<fftw_complex*>(correlationBuffer.get()), nullptr,
+          1, correlation,
+          reinterpret_cast<fftw_complex*>(correlationBuffer.get()), nullptr,
+          1, correlation, FFTW_FORWARD, flags));
+      Plan newCorrelationInverseA = checkedPlan(fftw_plan_dft_1d(
+          correlation, reinterpret_cast<fftw_complex*>(correlationA.get()),
+          reinterpret_cast<fftw_complex*>(correlationA.get()), FFTW_BACKWARD,
+          flags));
+      Plan newCorrelationInverseB = checkedPlan(fftw_plan_dft_1d(
+          correlation, reinterpret_cast<fftw_complex*>(correlationB.get()),
+          reinterpret_cast<fftw_complex*>(correlationB.get()), FFTW_BACKWARD,
+          flags));
+
+      int filter = static_cast<int>(filterLength);
+      Plan newFilterForwardX = checkedPlan(fftw_plan_many_dft(
+          1, &filter, kFilterBatch,
+          reinterpret_cast<fftw_complex*>(filterX.get()), nullptr, 1, filter,
+          reinterpret_cast<fftw_complex*>(filterX.get()), nullptr, 1, filter,
+          FFTW_FORWARD, flags));
+      Plan newFilterForwardW = checkedPlan(fftw_plan_dft_1d(
+          filter, reinterpret_cast<fftw_complex*>(filterW.get()),
+          reinterpret_cast<fftw_complex*>(filterW.get()), FFTW_FORWARD,
+          flags));
+      Plan newFilterInverse = checkedPlan(fftw_plan_many_dft(
+          1, &filter, kFilterBatch,
+          reinterpret_cast<fftw_complex*>(filterOutput.get()), nullptr, 1,
+          filter, reinterpret_cast<fftw_complex*>(filterOutput.get()), nullptr,
+          1, filter, FFTW_BACKWARD, flags));
+
+      if (workerEnabled)
+        worker = std::make_unique<owl_corr::Worker>(correlationLength,
+                                                    correlationBuffer.get());
+
+      // unique_ptr moves are noexcept; after this point no constructor work
+      // can throw, and the normal destructor destroys these under the lock.
+      correlationForward = std::move(newCorrelationForward);
+      correlationInverseA = std::move(newCorrelationInverseA);
+      correlationInverseB = std::move(newCorrelationInverseB);
+      filterForwardX = std::move(newFilterForwardX);
+      filterForwardW = std::move(newFilterForwardW);
+      filterInverse = std::move(newFilterInverse);
+#ifdef OWL_ENABLE_GPU_FIR
+      gpu = std::move(newGpu);
+#endif
     }
   }
 
-  // cross-correlation vector b
-  for (i = 0; i < nSamples; i++)
+  ~Impl()
   {
-    dataB[i] = (dataOutY[i] * std::conj(dataOutX[i]));
-  }
-  fftw_execute(fftB);
-  for (i = 0; i < nBins; i++)
-  {
-    b[i] = dataB[i] / (double)nSamples;
-  }
-
-  // compute weights
-  success = arma::chol(A, A);
-  if (!success)
-  {
-    std::cerr << "Chol decomposition failed, skip clutter filter" << std::endl;
-    return false;
-  }
-  success = arma::solve(w, arma::trimatu(A), arma::solve(arma::trimatl(arma::trans(A)), b));
-  if (!success)
-  {
-    std::cerr << "Solve failed, skip clutter filter" << std::endl;
-    return false;
+    worker.reset();
+    std::lock_guard<std::mutex> lock(plannerMutex());
+    filterInverse.reset();
+    filterForwardW.reset();
+    filterForwardX.reset();
+    correlationInverseB.reset();
+    correlationInverseA.reset();
+    correlationForward.reset();
   }
 
-  // assign and pad x
-  for (i = 0; i < nSamples; i++)
+  void correlateSerial()
   {
-    filtX[i] = dataX[i];
-  }
-  for (i = nSamples; i < nFilter; i++)
-  {
-    filtX[i] = {0, 0};
-  }
-
-  // assign and pad w
-  for (i = 0; i < nBins; i++)
-  {
-    filtW[i] = w[i];
-  }
-  for (i = nBins; i < nFilter; i++)
-  {
-    filtW[i] = {0, 0};
+    const uint32_t hop = correlationLength - taps + 1;
+    for (uint64_t begin = 0; begin < samples; begin += hop)
+    {
+      owl_corr::transform(
+          {dataX.get(), dataY.get(), samples, taps, correlationLength, begin,
+           correlationForward.get()},
+          correlationBuffer.get());
+      owl_corr::accumulate(correlationBuffer.get(), correlationLength,
+                           correlationA.get(), correlationB.get());
+    }
   }
 
-  // compute fft
-  fftw_execute(fftFiltX);
-  fftw_execute(fftFiltW);
-
-  // compute convolution/filter
-  for (i = 0; i < nFilter; i++)
+  bool process(IqData* reference, IqData* surveillance)
   {
-    filt[i] = (filtW[i] * filtX[i]);
-  }
-  fftw_execute(fftFilt);
+    if (!reference || !surveillance ||
+        reference->get_length() != samples ||
+        surveillance->get_length() != samples)
+      throw std::invalid_argument("Clutter input length differs from CPI");
 
-  // update surveillance signal
-  y->clear();
-  for (i = 0; i < nSamples; i++)
-  {
-    y->push_back(dataY[i] - (filt[i] / (double)nFilter));
-  }
+    const auto& x = reference->view_data();
+    const auto& y = surveillance->view_data();
+    owl_clutter::copyRotation(x, samples, delayMin, dataX.get());
+    std::copy_n(y.begin(), samples, dataY.get());
+#ifdef OWL_ENABLE_GPU_FIR
+    if (gpu) gpu->reference(dataX.get());
+    GpuCycle gpuCycle{gpu.get()};
+#endif
 
-  return true;
+    std::fill(correlationA.get(), correlationA.get() + correlationLength,
+              Complex{});
+    std::fill(correlationB.get(), correlationB.get() + correlationLength,
+              Complex{});
+    if (worker)
+      owl_corr::correlate(*worker, dataX.get(), dataY.get(), samples, taps,
+                          correlationLength, correlationForward.get(),
+                          correlationBuffer.get(), correlationA.get(),
+                          correlationB.get());
+    else
+      correlateSerial();
+
+    fftw_execute(correlationInverseA.get());
+    fftw_execute(correlationInverseB.get());
+    for (uint32_t i = 0; i < taps; ++i)
+    {
+      autocorrelation[i] =
+          std::conj(correlationA.get()[i]) / double(correlationLength);
+      crosscorrelation[i] =
+          correlationB.get()[i] / double(correlationLength);
+    }
+
+    owl_toeplitz::Result fastSolve;
+    if (!forceDense)
+      fastSolve = owl_toeplitz::solve(
+          autocorrelation.memptr(), crosscorrelation.memptr(),
+          weights.memptr(), taps, correlationBuffer.get(),
+          correlationBuffer.get() + taps);
+#ifdef OWL_TOEPLITZ_AUDIT
+    owlToeplitzAudit.record(fastSolve);
+#endif
+    if (!fastSolve.accepted())
+    {
+      matrix = arma::toeplitz(autocorrelation);
+      for (uint32_t row = 0; row < taps; ++row)
+        for (uint32_t column = 0; column < row; ++column)
+          matrix(row, column) = std::conj(matrix(row, column));
+
+      if (!arma::chol(matrix, matrix))
+      {
+        std::cerr << "Chol decomposition failed, skip clutter filter\n";
+        return false;
+      }
+      if (!arma::solve(weights, arma::trimatu(matrix),
+                       arma::solve(arma::trimatl(arma::trans(matrix)),
+                                   crosscorrelation)))
+      {
+        std::cerr << "Solve failed, skip clutter filter\n";
+        return false;
+      }
+    }
+
+    uint32_t cpuStart = 0;
+#ifdef OWL_ENABLE_GPU_FIR
+    if (gpu) cpuStart = gpu->start(dataX.get(), weights.memptr());
+#endif
+    std::copy_n(weights.memptr(), taps, filterW.get());
+    std::fill(filterW.get() + taps, filterW.get() + filterLength, Complex{});
+    fftw_execute(filterForwardW.get());
+
+    const uint32_t hop = filterLength - taps + 1;
+    for (uint64_t base = cpuStart; base < samples;
+         base += uint64_t(kFilterBatch) * hop)
+    {
+      for (uint32_t lane = 0; lane < kFilterBatch; ++lane)
+      {
+        Complex* slot = filterX.get() + uint64_t(lane) * filterLength;
+        const int64_t first = int64_t(base) + int64_t(lane) * hop -
+                              (taps - 1);
+        const int64_t lower = std::max<int64_t>(0, first);
+        const int64_t upper =
+            std::min<int64_t>(samples, first + filterLength);
+        if (lower >= upper)
+        {
+          std::fill(slot, slot + filterLength, Complex{});
+          continue;
+        }
+        const size_t left = static_cast<size_t>(lower - first);
+        const size_t count = static_cast<size_t>(upper - lower);
+        std::fill(slot, slot + left, Complex{});
+        std::copy(dataX.get() + lower, dataX.get() + upper, slot + left);
+        std::fill(slot + left + count, slot + filterLength, Complex{});
+      }
+
+      fftw_execute(filterForwardX.get());
+      for (uint32_t lane = 0; lane < kFilterBatch; ++lane)
+        for (uint32_t i = 0; i < filterLength; ++i)
+        {
+          const uint64_t index = uint64_t(lane) * filterLength + i;
+          filterOutput.get()[index] =
+              filterX.get()[index] * filterW.get()[i];
+        }
+      fftw_execute(filterInverse.get());
+
+      for (uint32_t lane = 0; lane < kFilterBatch; ++lane)
+      {
+        const uint64_t begin = base + uint64_t(lane) * hop;
+        if (begin >= samples) break;
+        const uint32_t count = static_cast<uint32_t>(
+            std::min<uint64_t>(hop, samples - begin));
+        const Complex* valid = filterOutput.get() +
+                               uint64_t(lane) * filterLength + taps - 1;
+        for (uint32_t i = 0; i < count; ++i)
+          dataY.get()[begin + i] -= valid[i] / double(filterLength);
+      }
+    }
+
+#ifdef OWL_ENABLE_GPU_FIR
+    if (gpu) gpu->finish(dataY.get());
+#endif
+
+    surveillance->assign_samples(dataY.get(), samples);
+    return true;
+  }
+};
+
+WienerHopf::WienerHopf(int32_t delayMin, int32_t delayMax,
+                       uint32_t nSamples)
+    : impl_(std::make_unique<Impl>(delayMin, delayMax, nSamples))
+{
+}
+
+WienerHopf::~WienerHopf() = default;
+
+uint32_t WienerHopf::filter_fft_length() const
+{
+  return impl_->filterLength;
+}
+
+bool WienerHopf::process(IqData* x, IqData* y)
+{
+  return impl_->process(x, y);
 }

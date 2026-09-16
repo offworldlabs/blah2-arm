@@ -25,6 +25,9 @@
 
 #include <stdint.h>
 #include <string>
+#include <cstdint>
+
+class PairedCpiQueue;
 
 #define BUFFER_SIZE_NR 1024
 
@@ -102,7 +105,10 @@ private:
   /// @return Void.
   static void _stream_a_callback(short *xi, short *xq, sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, unsigned int reset, void *cbContext)
   {
-    static_cast<RspDuo *>(cbContext)->stream_a_callback(xi, xq, params, numSamples, reset, cbContext);
+    auto *self = static_cast<RspDuo *>(cbContext);
+    if (!self) return;
+    try { self->stream_a_callback(xi, xq, params, numSamples, reset, cbContext); }
+    catch (...) { self->callback_failure(); }
   };
 
   /// @brief Wrapper for C style callback function for stream_b_callback().
@@ -115,7 +121,10 @@ private:
   /// @return Void.
   static void _stream_b_callback(short *xi, short *xq, sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, unsigned int reset, void *cbContext)
   {
-    static_cast<RspDuo *>(cbContext)->stream_b_callback(xi, xq, params, numSamples, reset, cbContext);
+    auto *self = static_cast<RspDuo *>(cbContext);
+    if (!self) return;
+    try { self->stream_b_callback(xi, xq, params, numSamples, reset, cbContext); }
+    catch (...) { self->callback_failure(); }
   };
 
   /// @brief Wrapper for C style callback function for event_callback().
@@ -126,7 +135,10 @@ private:
   /// @return Void.
   static void _event_callback(sdrplay_api_EventT eventId, sdrplay_api_TunerSelectT tuner, sdrplay_api_EventParamsT *params, void *cbContext)
   {
-    static_cast<RspDuo *>(cbContext)->event_callback(eventId, tuner, params, cbContext);
+    auto *self = static_cast<RspDuo *>(cbContext);
+    if (!self) return;
+    try { self->event_callback(eventId, tuner, params, cbContext); }
+    catch (...) { self->callback_failure(false); }
   };
 
   /// @brief Tuner a callback as defined in SDRplay API.
@@ -165,7 +177,17 @@ private:
   /// @return Void.
   void uninitialise_device();
 
+  static void callback_failure(bool pair = true) noexcept;
+
 public:
+  // Opt-in paired raw CPI path; configure before starting SDK callbacks and
+  // clear only after Uninit has stopped them.
+  static void set_output_queue(PairedCpiQueue *queue);
+  static uint64_t rejected_callback_pairs();
+  static uint64_t uncertain_counter_wraps();
+  static uint64_t fifo_wait_ns();
+  static uint64_t fifo_wait_max_ns();
+  static uint64_t fifo_lock_calls();
   /// @brief Constructor.
   /// @param fc Center frequency (Hz).
   /// @param path Path to save IQ data.
@@ -180,7 +202,7 @@ public:
   /// @param buffer1 Pointer to reference buffer.
   /// @param buffer2 Pointer to surveillance buffer.
   /// @return Void.
-  void process(IqData *buffer1, IqData *buffer2);
+  void process(IqData *buffer1, IqData *buffer2) override;
 
   /// @brief Get file name from path.
   /// @return String of file name based on current time.
@@ -188,11 +210,13 @@ public:
 
   /// @brief Call methods to start capture.
   /// @return Void.
-  void start();
+  void start() override;
 
   /// @brief Call methods to gracefully stop capture.
   /// @return Void.
-  void stop();
+  void stop() override;
+
+  void request_stop() noexcept override;
 
   /// @brief Implement replay function on RSPduo.
   /// @param buffer1 Pointer to reference buffer.
@@ -200,7 +224,7 @@ public:
   /// @param file Path to file to replay data from.
   /// @param loop True if samples should loop at EOF.
   /// @return Void.
-  void replay(IqData *buffer1, IqData *buffer2, std::string file, bool loop);
+  void replay(IqData *buffer1, IqData *buffer2, std::string file, bool loop) override;
 
   /// @brief Live retune fc, per-tuner gain reduction and LNA state on the
   /// open device.

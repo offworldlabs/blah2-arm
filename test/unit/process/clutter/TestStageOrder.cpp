@@ -79,6 +79,8 @@ int main()
   const int32_t delayMin = -10;
   const int32_t delayMax = 400;
   const double spectrumBandwidth = 2000;
+  const double centerFrequency = 204640000;
+  const double sampleRate = 2000000;
 
   // The clutter filter must not touch the reference channel.
   {
@@ -111,7 +113,7 @@ int main()
   {
     IqData xa(n), ya(n);
     fill(&xa, &ya, n);
-    SpectrumAnalyser serialOrder(n, spectrumBandwidth);
+    SpectrumAnalyser serialOrder(n, spectrumBandwidth, centerFrequency, sampleRate);
     serialOrder.process(&xa);
     const std::string jsonBefore = xa.to_json(1234567890ULL);
     WienerHopf filterA(delayMin, delayMax, n);
@@ -121,7 +123,7 @@ int main()
     fill(&xb, &yb, n);
     WienerHopf filterB(delayMin, delayMax, n);
     filterB.process(&xb, &yb);
-    SpectrumAnalyser pipelineOrder(n, spectrumBandwidth);
+    SpectrumAnalyser pipelineOrder(n, spectrumBandwidth, centerFrequency, sampleRate);
     pipelineOrder.process(&xb);
     const std::string jsonAfter = xb.to_json(1234567890ULL);
 
@@ -160,12 +162,10 @@ int main()
             "clear-then-refill matches the serial refill-with-eviction");
   }
 
-  // The two stages plan at 2 threads each rather than both claiming 4, so the
-  // transforms are not the ones the serial build planned. FFTW parallelises
-  // across a Cooley-Tukey factor, so a different thread count sums in a
-  // different order and the numbers move. Bound how far: the FFT length work
-  // already accepted 6e-14 relative, about 264 dB below signal, so this has to
-  // be no worse.
+  // Bounded clutter plans are deliberately created with one planner thread.
+  // FFTW parallelises across a Cooley-Tukey factor, so moving away from the
+  // former global count can change summation order. Bound that movement by the
+  // already accepted 6e-14 relative tolerance.
   {
     fftw_init_threads();
     const uint32_t m = 200000;
@@ -189,7 +189,8 @@ int main()
     // the source, so it lives here purely as the comparison point.
     constexpr int legacyPlannerThreads = 4;
     const std::vector<Complex> serial = transform(legacyPlannerThreads);
-    const std::vector<Complex> pipelined = transform(blah2::kBackStageThreads);
+    constexpr int clutterPlannerThreads = 1;
+    const std::vector<Complex> pipelined = transform(clutterPlannerThreads);
 
     double peak = 0, worst = 0;
     for (uint32_t i = 0; i < m; i++)
@@ -199,7 +200,7 @@ int main()
     }
     const double relative = worst / peak;
     std::printf("   planner %d threads vs %d: %.3g of peak (%.0f dB below)\n",
-                legacyPlannerThreads, blah2::kBackStageThreads, relative,
+                legacyPlannerThreads, clutterPlannerThreads, relative,
                 20.0 * std::log10(peak / worst));
     require(relative < 6e-14,
             "per-stage thread count moves an FFT less than the accepted 6e-14");

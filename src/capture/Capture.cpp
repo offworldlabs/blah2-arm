@@ -5,6 +5,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdio>
+#include <atomic>
 #include <httplib.h>
 
 // constants
@@ -34,17 +35,31 @@ void Capture::process(IqData *buffer1, IqData *buffer2, c4::yml::NodeRef config,
   std::cout << "Setting up device " + type << std::endl;
 
   device = factory_source(type, config, verbose);
+  if (!device) throw std::runtime_error("Capture source unavailable");
+  activeDevice.store(device.get());
+  if (stopRequested.load())
+  {
+    activeDevice.store(nullptr);
+    return;
+  }
+  std::atomic<bool> running{true};
 
   // capture status thread
-  std::thread t1([&]{
-    while (true)
+  std::thread t1, tRetune, tPeakStatus;
+  try
+  {
+  t1 = std::thread([&]{
+    while (running.load())
     {
       httplib::Client cli("http://" + ip_capture + ":" 
         + std::to_string(port_capture));
+      cli.set_connection_timeout(1, 0);
+      cli.set_read_timeout(1, 0);
+      cli.set_write_timeout(1, 0);
       httplib::Result res = cli.Get("/capture");
 
       // if capture status changed
-      if ((res->body == "true") != saveIq)
+      if (res && res->status == 200 && (res->body == "true") != saveIq)
       {
         saveIq = res->body == "true";
         if (saveIq)
@@ -62,7 +77,7 @@ void Capture::process(IqData *buffer1, IqData *buffer2, c4::yml::NodeRef config,
 
   // retune poll thread: applies live fc/gain changes requested via the API
   // and reports per-tuner RF overload state back to it
-  std::thread tRetune([&]{
+  tRetune = std::thread([&]{
     bool lastOverloadA = false;
     bool lastOverloadB = false;
     unsigned long lastOverloadCountA = 0;
@@ -70,10 +85,13 @@ void Capture::process(IqData *buffer1, IqData *buffer2, c4::yml::NodeRef config,
     bool overloadReported = false;
     auto lastRfStatusPost = std::chrono::steady_clock::now();
 
-    while (true)
+    while (running.load())
     {
       httplib::Client cli("http://" + ip_capture + ":"
         + std::to_string(port_capture));
+      cli.set_connection_timeout(1, 0);
+      cli.set_read_timeout(1, 0);
+      cli.set_write_timeout(1, 0);
 
       // check for a pending retune request
       httplib::Result res = cli.Get("/capture/retune");
@@ -193,11 +211,14 @@ void Capture::process(IqData *buffer1, IqData *buffer2, c4::yml::NodeRef config,
   // above (one thread per concern) — reports live per-tuner signal level
   // to blah2_api every second, no on-change/heartbeat logic needed since
   // it's a continuous value, not a rare state transition
-  std::thread tPeakStatus([&]{
-    while (true)
+  tPeakStatus = std::thread([&]{
+    while (running.load())
     {
       httplib::Client cli("http://" + ip_capture + ":"
         + std::to_string(port_capture));
+      cli.set_connection_timeout(1, 0);
+      cli.set_read_timeout(1, 0);
+      cli.set_write_timeout(1, 0);
 
       double dbfsA = 0, dbfsB = 0;
       if (device->get_peak_dbfs(dbfsA, dbfsB))
@@ -212,19 +233,56 @@ void Capture::process(IqData *buffer1, IqData *buffer2, c4::yml::NodeRef config,
       sleep(1);
     }
   });
+  }
+  catch (...)
+  {
+    running.store(false);
+    if (t1.joinable()) t1.join();
+    if (tRetune.joinable()) tRetune.join();
+    if (tPeakStatus.joinable()) tPeakStatus.join();
+    activeDevice.store(nullptr);
+    throw;
+  }
 
-  if (!replay)
+  auto stopStatusThreads = [&] {
+    running.store(false);
+    if (t1.joinable()) t1.join();
+    if (tRetune.joinable()) tRetune.join();
+    if (tPeakStatus.joinable()) tPeakStatus.join();
+  };
+  bool deviceStarted = false;
+  try
   {
-    device->start();
-    device->process(buffer1, buffer2);
+    if (!replay)
+    {
+      device->start();
+      deviceStarted = true;
+      device->process(buffer1, buffer2);
+      stopStatusThreads();
+      device->stop(); // Stop callbacks before the paired queue can be destroyed.
+      deviceStarted = false;
+    }
+    else
+    {
+      device->replay(buffer1, buffer2, file, loop);
+    }
   }
-  else
+  catch (...)
   {
-    device->replay(buffer1, buffer2, file, loop);
+    stopStatusThreads();
+    if (deviceStarted) device->stop();
+    activeDevice.store(nullptr);
+    throw;
   }
-  t1.join();
-  tRetune.join();
-  tPeakStatus.join();
+  stopStatusThreads();
+  activeDevice.store(nullptr);
+}
+
+void Capture::request_stop() noexcept
+{
+  stopRequested.store(true);
+  Source *source = activeDevice.load();
+  if (source) source->request_stop();
 }
 
 std::unique_ptr<Source> Capture::factory_source(const std::string& type, c4::yml::NodeRef config, bool verbose)

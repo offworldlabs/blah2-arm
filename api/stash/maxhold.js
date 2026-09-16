@@ -1,74 +1,45 @@
-const http = require('http');
+const updates = require('./updates.js');
 
 var nCpi = 20;
 var map = [];
 var maxhold = '';
-var timestamp = '';
-const options_timestamp = {
-  host: '127.0.0.1',
-  path: '/api/timestamp',
-  port: 3000
-};
-const options_map = {
-  host: '127.0.0.1',
-  path: '/api/map',
-  port: 3000
-};
-
+// Traverse one row at a time while retaining the oldest-to-newest reduction.
 function process(matrixArray) {
-
   const result = [];
-
-  for (let i = 0; i < matrixArray[0].length; i++) {
-    const row = [];
-    for (let j = 0; j < matrixArray[0][0].length; j++) {
-        let maxVal = matrixArray[0][i][j];
-        for (let k = 1; k < matrixArray.length; k++) {
-            maxVal = Math.max(maxVal, matrixArray[k][i][j]);
-        }
-        row.push(maxVal);
+  const rows = matrixArray[0].length;
+  const cols = matrixArray[0][0].length;
+  for (let i = 0; i < rows; ++i) {
+    const row = matrixArray[0][i].slice(0, cols);
+    for (let k = 1; k < matrixArray.length; ++k) {
+      const source = matrixArray[k][i];
+      for (let j = 0; j < cols; ++j) {
+        row[j] = Math.max(row[j], source[j]);
+      }
     }
     result.push(row);
-}
-
+  }
   return result;
 }
 
-function update_data() {
+var lastUpdate;
+updates.subscribe('map', function(body) {
+  try {
+    const parsed = JSON.parse(body);
+    const key = String(parsed.timestamp);
+    if (lastUpdate === key) return;
+    lastUpdate = key;
 
-  // check if timestamp is updated
-  http.get(options_timestamp, function(res) {
-    res.setEncoding('utf8');
-    res.on('data', function (body) {
-      if (timestamp != body)
-      {
-        timestamp = body;
-        http.get(options_map, function(res) {
-          let body_map = '';
-          res.setEncoding('utf8');
-          res.on('data', (chunk) => {
-            body_map += chunk;
-          });
-          res.on('end', () => {
-            try {
-              maxhold = JSON.parse(body_map);
-              map.push(maxhold.data);
-              if (map.length > nCpi) {
-                map.shift();
-              }
-              maxhold.data = process(map);
-            } catch (e) {
-              console.error(e.message);
-            }
-          });
-        });
-      }
-    });
-  });
+    maxhold = parsed;
+    map.push(maxhold.data);
+    if (map.length > nCpi) {
+      map.shift();
+    }
+    maxhold.data = process(map);
 
-};
-
-setInterval(update_data, 100);
+  } catch (e) {
+    console.error(e.message);
+  }
+});
 
 function get_data() {
   return maxhold;

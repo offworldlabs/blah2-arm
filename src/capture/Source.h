@@ -61,6 +61,10 @@ public:
   /// @return Void.
   virtual void stop() = 0;
 
+  /// @brief Ask a running capture/replay loop to return so its owner can
+  /// stop callbacks and join control threads in the normal teardown path.
+  virtual void request_stop() noexcept {}
+
   /// @brief Implement replay function on RSPduo.
   /// @param buffer1 Pointer to reference buffer.
   /// @param buffer2 Pointer to surveillance buffer.

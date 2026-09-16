@@ -1,6 +1,7 @@
 #include "IqData.h"
 #include <iostream>
 #include <cstdlib>
+#include <stdexcept>
 
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
@@ -8,10 +9,14 @@
 #include "rapidjson/filewritestream.h"
 
 // constructor
-IqData::IqData(uint32_t _n)
+IqData::IqData(uint32_t _n) : n(_n), data(new std::deque<std::complex<double>>),
+                              min(0.0), max(0.0), mean(0.0)
 {
-  n = _n;
-  data = new std::deque<std::complex<double>>;
+}
+
+IqData::~IqData()
+{
+  delete data;
 }
 
 uint32_t IqData::get_n()
@@ -42,6 +47,18 @@ std::deque<std::complex<double>> IqData::get_data()
 const std::deque<std::complex<double>> &IqData::view_data() const
 {
   return *data;
+}
+
+void IqData::assign_samples(const std::complex<double>* samples, uint32_t count)
+{
+  if (count > n || (count && !samples))
+    throw std::invalid_argument("Invalid IQ sample replacement");
+  if (!count)
+  {
+    data->clear();
+    return;
+  }
+  data->assign(samples, samples + count);
 }
 
 void IqData::push_back(std::complex<double> sample)
@@ -128,4 +145,16 @@ std::string IqData::to_json(uint64_t timestamp)
   document.Accept(writer);
 
   return strbuf.GetString();
+}
+
+void IqData::assign_paired_i16(const int16_t* samples, uint32_t count, IqData& other)
+{
+  if (this==&other || count>n || count>other.n || (count && !samples))
+    throw std::invalid_argument("Invalid paired IQ sample replacement");
+  data->resize(count); other.data->resize(count);
+  auto a=data->begin(), b=other.data->begin();
+  for (uint32_t i=0;i<count;++i,++a,++b,samples+=4) {
+    *a={double(samples[0]),double(samples[1])};
+    *b={double(samples[2]),double(samples[3])};
+  }
 }

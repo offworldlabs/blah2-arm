@@ -25,13 +25,13 @@ private:
   /// @brief Pointer to IQ data.
   std::deque<std::complex<double>> *data;
 
-  /// @brief Minimum value.
+  /// @brief Legacy JSON placeholder; no minimum statistic is calculated here.
   double min;
 
-  /// @brief Maximum value.
+  /// @brief Legacy JSON placeholder; no maximum statistic is calculated here.
   double max;
 
-  /// @brief Mean value.
+  /// @brief Legacy JSON placeholder; no mean statistic is calculated here.
   double mean;
 
   /// @brief Spectrum vector.
@@ -45,6 +45,9 @@ public:
   /// @param n Number of samples.
   /// @return The object.
   IqData(uint32_t n);
+  ~IqData();
+  IqData(const IqData&) = delete;
+  IqData& operator=(const IqData&) = delete;
 
   /// @brief Getter for maximum number of samples.
   /// @return Maximum number of samples.
@@ -73,6 +76,14 @@ public:
   /// queue (push_back, pop_front, clear).
   /// @return Const reference to the IQ data.
   const std::deque<std::complex<double>> &view_data() const;
+
+  /// @brief Replace samples from a nonaliasing contiguous buffer.
+  /// @details Rejects counts above capacity and null non-empty input without
+  /// changing the existing samples.
+  void assign_samples(const std::complex<double>* samples, uint32_t count);
+
+  /// Replace both exclusively owned channels from interleaved signed16 IIQQ.
+  void assign_paired_i16(const int16_t* samples, uint32_t count, IqData& other);
 
   /// @brief Push a sample to the queue.
   /// @param sample A single sample.

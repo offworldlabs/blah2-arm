@@ -14,8 +14,11 @@
 #include "data/IqData.h"
 
 #include <condition_variable>
+#include <atomic>
 #include <cstdint>
 #include <deque>
+#include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,6 +27,13 @@
 
 namespace blah2
 {
+
+/// @brief During streaming keep the legacy lookahead sample; after a finite
+/// capture ends, accept a final exact CPI and then terminate cleanly.
+inline bool fifo_frame_ready(uint32_t a, uint32_t b, uint32_t n, bool done)
+{
+  return done ? a >= n && b >= n : a > n && b > n;
+}
 
 /// @brief One CPI in flight between pipeline stages.
 struct CpiSlot
@@ -59,6 +69,12 @@ struct CpiSlot
   /// @brief Centre frequency to adopt, valid when fcChanged.
   uint32_t fc = 0;
 
+  /// @brief Sample sequence of a raw paired CPI. Valid only in queue mode.
+  uint32_t firstSample = 0;
+  uint64_t captureEpoch = 0;
+  bool captureDiscontinuity = false;
+  bool pairedCapture = false;
+
   /// @brief Ready the slot for a fresh CPI.
   void reset()
   {
@@ -67,39 +83,110 @@ struct CpiSlot
     timingTime.clear();
     fcChanged = false;
     fc = 0;
+    firstSample = 0;
+    captureEpoch = 0;
+    captureDiscontinuity = false;
+    pairedCapture = false;
   }
 };
 
 /// @brief Blocking handoff between pipeline stages.
-/// @details No capacity limit is needed: the number of slots in circulation is
-/// fixed at startup, so a stage that runs ahead blocks on the free list. The
-/// radar loop runs until the process is killed, so there is no close path.
+/// @details The fixed slot count bounds storage. Closing unblocks consumers
+/// after queued slots drain, including when a worker fails.
 template <typename T>
 class BlockingQueue
 {
 public:
-  void push(T value)
+  bool push(T value)
   {
     {
       std::lock_guard<std::mutex> lock(mutex);
+      if (closed) return false;
       queue.push_back(std::move(value));
     }
     condition.notify_one();
+    return true;
   }
 
   T pop()
   {
     std::unique_lock<std::mutex> lock(mutex);
-    condition.wait(lock, [this] { return !queue.empty(); });
+    condition.wait(lock, [this] { return !queue.empty() || closed; });
+    if (queue.empty()) return T{};
     T value = std::move(queue.front());
     queue.pop_front();
     return value;
+  }
+
+  void close()
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      closed = true;
+    }
+    condition.notify_all();
   }
 
 private:
   std::mutex mutex;
   std::condition_variable condition;
   std::deque<T> queue;
+  bool closed = false;
+};
+
+/// @brief Coordinate first worker failure and unblock both pipeline stages.
+/// @details Stop hooks are called once. Each is attempted even if another
+/// hook throws, so capture teardown cannot prevent queue wakeups.
+class PipelineStop
+{
+public:
+  PipelineStop(std::function<void()> stopCapture,
+    std::function<void()> closeInput,
+    std::function<void()> closeFree,
+    std::function<void()> closeFiltered)
+    : stopCapture_(std::move(stopCapture)), closeInput_(std::move(closeInput)),
+      closeFree_(std::move(closeFree)), closeFiltered_(std::move(closeFiltered)) {}
+
+  bool stopping() const noexcept { return stopping_.load(); }
+
+  template <typename F>
+  void run(F &&work) noexcept
+  {
+    try { work(); }
+    catch (...) { fail(std::current_exception()); }
+  }
+
+  void fail(std::exception_ptr error) noexcept
+  {
+    try
+    {
+      std::lock_guard<std::mutex> lock(errorMutex_);
+      if (!error_) error_ = error;
+    }
+    catch (...) {}
+    stop();
+  }
+
+  void stop() noexcept
+  {
+    if (stopping_.exchange(true)) return;
+    try { stopCapture_(); } catch (...) {}
+    try { closeInput_(); } catch (...) {}
+    try { closeFree_(); } catch (...) {}
+    try { closeFiltered_(); } catch (...) {}
+  }
+
+  std::exception_ptr error() const
+  {
+    std::lock_guard<std::mutex> lock(errorMutex_);
+    return error_;
+  }
+
+private:
+  std::function<void()> stopCapture_, closeInput_, closeFree_, closeFiltered_;
+  std::atomic<bool> stopping_{false};
+  mutable std::mutex errorMutex_;
+  std::exception_ptr error_;
 };
 
 }

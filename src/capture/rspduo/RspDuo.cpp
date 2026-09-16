@@ -1,4 +1,45 @@
+#include "SdkSampleClock.h"
+#include "UsbMode.h"
+
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
+#include <time.h>
+// Metadata only, while the existing callback-pair mutex is held. No IQ,
+// stream flags, queue behavior, or normal callback ordering is changed.
+static void owlSdkTrace(uint32_t first, uint32_t count, bool resetA, bool resetB,
+                        int grChanged, int rfChanged, int fsChanged) {
+  static int fd=[] { const char* p=std::getenv("OWL_SDK_META_LOG");
+    return p ? ::open(p,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600) : -1; }();
+  static bool have=false; static uint32_t expected=0,previousFirst=0,previousCount=0;
+  static uint64_t callbacks=0,events=0;
+  if(fd>=0 && (!have || first!=expected || resetA || resetB || grChanged || rfChanged || fsChanged)) {
+    if(events++<64) {
+      timespec ts{};clock_gettime(CLOCK_MONOTONIC,&ts);char line[768];
+      int n=std::snprintf(line,sizeof(line),"{\"monotonic_ns\":%llu,\"callback\":%llu,\"have_previous\":%s,\"first\":%u,\"expected\":%u,\"previous_first\":%u,\"previous_count\":%u,\"count\":%u,\"reset_a\":%s,\"reset_b\":%s,\"gr_changed\":%d,\"rf_changed\":%d,\"fs_changed\":%d}\n",
+        (unsigned long long)(uint64_t(ts.tv_sec)*1000000000+ts.tv_nsec),(unsigned long long)callbacks,
+        have?"true":"false",first,expected,previousFirst,previousCount,count,
+        resetA?"true":"false",resetB?"true":"false",grChanged,rfChanged,fsChanged);
+      if(n>0 && n<int(sizeof(line))) { const auto wrote=::write(fd,line,size_t(n));(void)wrote; }
+    }
+  }
+  have=true;expected=first+count;previousFirst=first;previousCount=count;++callbacks;
+}
+static void owlCounterTrace(uint32_t raw,uint32_t count,const SdkSampleClock::Result& result) {
+  if(!result.sequence_break && !result.wrapped)return;
+  static int fd=[] {const char* p=std::getenv("OWL_SDK_COUNTER_LOG");
+    return p?::open(p,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600):-1;}();
+  static unsigned events=0;if(fd<0 || events++>=64)return;
+  timespec ts{};clock_gettime(CLOCK_MONOTONIC,&ts);char line[512];
+  int n=std::snprintf(line,sizeof(line),"{\"monotonic_ns\":%llu,\"raw_first\":%u,\"logical_first\":%u,\"count\":%u,\"sequence_break\":%s,\"wrapped\":%s,\"phases_before\":%u,\"phases_after\":%u}\n",
+    (unsigned long long)(uint64_t(ts.tv_sec)*1000000000+ts.tv_nsec),raw,result.first,count,
+    result.sequence_break?"true":"false",result.wrapped?"true":"false",result.phases_before,result.phases_after);
+  if(n>0 && n<int(sizeof(line))){const auto wrote=::write(fd,line,size_t(n));(void)wrote;}
+}
 #include "RspDuo.h"
+#include "capture/PairedCpiQueue.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -57,6 +98,7 @@ std::atomic<unsigned long> overload_count_b_fg{0};
 // global variables
 FILE *file_replay = NULL;
 short *buffer_16_ar = NULL;
+static std::vector<short> callbackStorage;
 std::string file;
 short max_a_nr = 0;
 short max_b_nr = 0;
@@ -66,12 +108,53 @@ short max_b_nr = 0;
 static const double FULL_SCALE_NR = 32767.0;
 std::atomic<short> peak_hold_a_fg{0};
 std::atomic<short> peak_hold_b_fg{0};
-bool run_fg = true;
+std::atomic<bool> run_fg{true};
 bool stats_fg = true;
 bool *capture_fg;
 std::ofstream* saveIqFileLocal;
 IqData *buffer1;
 IqData *buffer2;
+
+
+namespace {
+PairedCpiQueue* pairedQueue=nullptr;
+SdkSampleClock sampleClock;
+bool scaledClock=false;
+std::mutex callbackPairMutex;
+uint32_t pendingFirstA=0,pendingCountA=0;
+bool pendingResetA=false,pendingA=false;
+std::atomic<uint64_t> rejectedPairs{0};
+std::atomic<uint64_t> uncertainCounterWraps{0};
+uint64_t fifoWaitNs=0,fifoWaitMaxNs=0,fifoLockCalls=0;
+}
+void RspDuo::set_output_queue(PairedCpiQueue* queue) {
+  // Caller has stopped callbacks before changing or destroying the queue.
+  std::lock_guard<std::mutex> lock(callbackPairMutex);
+  if(pendingA) { buffer_16_ar=nullptr;pendingA=false; }
+  if(queue) {
+    const char* mode=std::getenv("OWL_SDK_COUNTER_SCALE");
+    if(mode && std::string(mode)!="1" && std::string(mode)!="3")throw std::invalid_argument("Invalid SDK counter scale");
+    scaledClock=mode && std::string(mode)=="3";
+    sampleClock.configure(scaledClock?3:1);
+  } else sampleClock.clear();
+  pairedQueue=queue;
+  if(!queue) { std::vector<short>().swap(callbackStorage); buffer_16_ar=nullptr; }
+}
+void RspDuo::callback_failure(bool pair) noexcept {
+  // Exceptions must never cross the SDK C callback boundary.
+  try {
+    std::lock_guard<std::mutex> lock(callbackPairMutex);
+    buffer_16_ar=nullptr;pendingA=false;
+    if (pair) ++rejectedPairs;
+    if(pairedQueue)pairedQueue->close();
+  } catch (...) {}
+  run_fg=false;
+}
+uint64_t RspDuo::rejected_callback_pairs() { return rejectedPairs; }
+uint64_t RspDuo::uncertain_counter_wraps() { return uncertainCounterWraps; }
+uint64_t RspDuo::fifo_wait_ns() { return fifoWaitNs; }
+uint64_t RspDuo::fifo_wait_max_ns() { return fifoWaitMaxNs; }
+uint64_t RspDuo::fifo_lock_calls() { return fifoLockCalls; }
 
 // constructor
 RspDuo::RspDuo(std::string _type, uint32_t _fc,
@@ -109,7 +192,7 @@ RspDuo::RspDuo(std::string _type, uint32_t _fc,
   nDecimation = decimationMap[fs];
   bwType = ifBandwidthMap[fs];
   ifType = ifModeMap[fs];
-  usb_bulk_fg = false;
+  usb_bulk_fg = owlUsbBulkMode(std::getenv("OWL_SDK_USB_MODE"));
   replay_mode_fg = false;
   capture_fg = saveIq;
   saveIqFileLocal = &saveIqFile;
@@ -133,6 +216,11 @@ void RspDuo::start()
 void RspDuo::stop()
 {
   uninitialise_device();
+}
+
+void RspDuo::request_stop() noexcept
+{
+  run_fg.store(false);
 }
 
 bool RspDuo::get_peak_dbfs(double &dbfsA, double &dbfsB)
@@ -241,6 +329,7 @@ void RspDuo::process(IqData *_buffer1, IqData *_buffer2)
     }
     sleep(1);
   }
+  throw std::runtime_error("RSPduo callback or IQ recording failed");
 }
 
 bool RspDuo::retune(uint32_t _fc, int _gainReductionA, int _gainReductionB,
@@ -366,8 +455,15 @@ void RspDuo::replay(IqData *_buffer1, IqData *_buffer2, std::string _file, bool 
   short i1, q1, i2, q2;
   int rv;
   file_replay = fopen(_file.c_str(), "rb");
+  if (!file_replay)
+  {
+    device_ready_fg.store(false);
+    throw std::runtime_error("Cannot open IQ replay file");
+  }
 
-  while (true)
+  try
+  {
+  while (run_fg.load())
   {
     rv = fread(&i1, 1, sizeof(short), file_replay);
     if (rv != sizeof(short)) break; 
@@ -377,16 +473,25 @@ void RspDuo::replay(IqData *_buffer1, IqData *_buffer2, std::string _file, bool 
     if (rv != sizeof(short)) break; 
     rv = fread(&q2, 1, sizeof(short), file_replay);
     if (rv != sizeof(short)) break; 
-    buffer1->lock();
-    buffer2->lock();
+    std::unique_lock<IqData> lockA(*buffer1);
+    std::unique_lock<IqData> lockB(*buffer2);
     if (buffer1->get_length() < buffer1->get_n())
     {
       buffer1->push_back({(double)i1, (double)q1});
       buffer2->push_back({(double)i2, (double)q2});
     }
-    buffer1->unlock();
-    buffer2->unlock();
   }
+  }
+  catch (...)
+  {
+    fclose(file_replay);
+    file_replay = nullptr;
+    device_ready_fg.store(false);
+    throw;
+  }
+  fclose(file_replay);
+  file_replay = nullptr;
+  device_ready_fg.store(false);
 }
 
 void RspDuo::validate() {
@@ -592,6 +697,15 @@ void RspDuo::set_device_parameters()
     exit(1);
   }
 
+  if (deviceParams->devParams == NULL)
+    throw std::runtime_error("SDK device ADC parameters pointer is null");
+  std::cerr << "OWL_SDK_CLOCK adc_fs=" << deviceParams->devParams->fsFreq.fsHz << " duo_fs=" << chosenDevice->rspDuoSampleFreq << std::endl;
+  const SdkSampleClock::ScaledDuoConfig clockConfig{
+    deviceParams->devParams->fsFreq.fsHz, chosenDevice->rspDuoSampleFreq,
+    fs, static_cast<unsigned>(nDecimation), ifType==sdrplay_api_IF_1_620,
+    chosenDevice->rspDuoMode==sdrplay_api_RspDuoMode_Dual_Tuner};
+  if(scaledClock && !SdkSampleClock::supportsRatio3(clockConfig))
+    throw std::runtime_error("Scaled SDK counter is validated only for dual-tuner 6MHz ADC / 2MSps output");
   // set USB mode
   if (usb_bulk_fg)
   {
@@ -708,18 +822,28 @@ void RspDuo::stream_a_callback(short *xi, short *xq,
 sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, 
 unsigned int reset, void *cbContext)
 {
+  std::unique_lock<std::mutex> pairLock(callbackPairMutex,std::defer_lock);
+  if ((numSamples && (!xi || !xq || !params)) || (pairedQueue && !params))
+    throw std::invalid_argument("Invalid tuner A callback inputs");
+  if(pairedQueue) {
+    pairLock.lock();
+    if(!numSamples) {
+      if(reset) {buffer_16_ar=nullptr;pendingA=false;sampleClock.clear();pairedQueue->discard_pending();}
+      return;
+    }
+    if(pendingA) {  buffer_16_ar=nullptr;
+      ++rejectedPairs; sampleClock.clear();pairedQueue->discard_pending(); }
+    pendingFirstA=params->firstSampleNum;pendingCountA=numSamples;
+    pendingResetA=reset!=0;pendingA=true;
+  }
+
   unsigned int i = 0;
   unsigned int j = 0;
 
   // process stream callback data
-  buffer_16_ar = (short int *)malloc(numSamples * 4 * sizeof(short));
-
-  if (buffer_16_ar == NULL)
-  {
-    std::cout << "Error: stream_a_callback, malloc failed" << std::endl;
-    run_fg = false;
-    return;
-  }
+  const size_t needed=size_t(numSamples)*4;
+  if(callbackStorage.size()<needed) callbackStorage.resize(needed);
+  buffer_16_ar=callbackStorage.data();
 
   // IIQQxxxx
   for (i = 0; i < numSamples; i++)
@@ -767,6 +891,22 @@ void RspDuo::stream_b_callback(short *xi, short *xq,
 sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, 
 unsigned int reset, void *cbContext)
 {
+  std::unique_lock<std::mutex> pairLock(callbackPairMutex,std::defer_lock);
+  if ((numSamples && (!xi || !xq || !params)) || (pairedQueue && !params))
+    throw std::invalid_argument("Invalid tuner B callback inputs");
+  if(pairedQueue) {
+    pairLock.lock();
+    if(!numSamples) {
+      if(reset) {buffer_16_ar=nullptr;pendingA=false;sampleClock.clear();pairedQueue->discard_pending();}
+      return;
+    }
+    if(!pendingA || !buffer_16_ar || pendingCountA!=numSamples ||
+        pendingFirstA!=params->firstSampleNum) {
+      buffer_16_ar=nullptr;pendingA=false;
+      ++rejectedPairs;sampleClock.clear();pairedQueue->discard_pending();return;
+    }
+  }
+
   unsigned int i = 0;
   unsigned int j = 0;
 
@@ -781,9 +921,26 @@ unsigned int reset, void *cbContext)
     buffer_16_ar[j++] = xq[i];
   }
 
+  if(pairedQueue) {
+    owlSdkTrace(params->firstSampleNum,numSamples,pendingResetA,reset!=0,params->grChanged,params->rfChanged,params->fsChanged);
+    if (scaledClock && params->fsChanged)
+      throw std::runtime_error("SDK sample rate changed after scaled counter validation");
+    const auto clock=sampleClock.observe(params->firstSampleNum,numSamples,
+      reset!=0 || pendingResetA || params->fsChanged || params->rfChanged);
+    if (clock.wrapped && clock.phases_after > 1) ++uncertainCounterWraps;
+    owlCounterTrace(params->firstSampleNum,numSamples,clock);
+    pairedQueue->push(buffer_16_ar,numSamples,clock.first,clock.sequence_break);
+  } else {
   // write data to IqData
+#ifdef OWL_CAPTURE_PROFILE
+  const auto lockBegin=std::chrono::steady_clock::now();
+#endif
   buffer1->lock();
   buffer2->lock();
+#ifdef OWL_CAPTURE_PROFILE
+  const uint64_t waitNs=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-lockBegin).count();
+  fifoWaitNs+=waitNs;fifoWaitMaxNs=std::max(fifoWaitMaxNs,waitNs);++fifoLockCalls;
+#endif
   for (i = 0; i < numSamples*4; i+=4)
   {
     buffer1->push_back({(double)buffer_16_ar[i], (double)buffer_16_ar[i+1]});
@@ -791,6 +948,8 @@ unsigned int reset, void *cbContext)
   }
   buffer1->unlock();
   buffer2->unlock();
+
+  }
 
   // write data to file
   if (*capture_fg)
@@ -801,13 +960,13 @@ unsigned int reset, void *cbContext)
     if (!(*saveIqFileLocal))
     {
       std::cout << "Error: stream_b_callback, not enough samples received" << std::endl;
-      free(buffer_16_ar);
+      buffer_16_ar=nullptr;pendingA=false;
       run_fg = false;
       return;
     }
   }
 
-  free(buffer_16_ar);
+  buffer_16_ar=nullptr;pendingA=false;
 
   // find max for stats
   if (stats_fg)
@@ -884,6 +1043,7 @@ void *cbContext)
 
   case sdrplay_api_DeviceRemoved:
     std::cerr << "[RspDuo] Device removed" << std::endl;
+    callback_failure(false);
     break;
 
   default:
@@ -894,13 +1054,19 @@ void *cbContext)
 
 void RspDuo::initialise_device()
 {
-  if ((err = sdrplay_api_Init(chosenDevice->dev, &cbFns, NULL)) != sdrplay_api_Success)
+  if ((err = sdrplay_api_Init(chosenDevice->dev, &cbFns, this)) != sdrplay_api_Success)
   {
     std::cerr << "Error: sdrplay_api_Init failed " << 
       sdrplay_api_GetErrorString(err) << std::endl;
     sdrplay_api_Close();
     exit(1);
   }
+  // A single post-Init readback, outside CPI processing. No per-callback I/O.
+  std::cerr << "OWL_SDK_USB requested=" << (usb_bulk_fg ? "bulk" : "isoch")
+            << " actual=" << int(deviceParams->devParams->mode)
+            << " samples_per_packet=" << deviceParams->devParams->samplesPerPkt
+            << " adc_fs=" << deviceParams->devParams->fsFreq.fsHz
+            << " duo_fs=" << chosenDevice->rspDuoSampleFreq << std::endl;
 }
 
 void RspDuo::uninitialise_device()

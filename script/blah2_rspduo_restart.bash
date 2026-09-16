@@ -5,6 +5,7 @@
 
 COMPOSE_FILE=/data/mender-docker-compose/current/manifests/docker-compose.yaml
 PROJECT=retina-node
+COMPOSE_ARGS=(-p "$PROJECT" -f "$COMPOSE_FILE")
 MODE_FILE=/data/retina-gui/mode.txt
 GRACE_PERIOD_SECONDS=60
 RESTART_COUNT_STATE=/run/blah2-rspduo-watchdog.count
@@ -46,7 +47,14 @@ fi
 # than this 5-minute cron cadence, StartedAt is always fresh - the grace
 # period below would skip every single run forever, silently masking the
 # crash loop instead of ever reaching the recovery step.
-RESTART_COUNT=$(docker inspect -f '{{.RestartCount}}' blah2 2>/dev/null)
+CONTAINER_META=$(timeout 2 /usr/local/libexec/owl-docker-metadata 2>/dev/null)
+HELPER_STATUS=$?
+if [ "$HELPER_STATUS" -eq 2 ]; then
+  CONTAINER_META=
+elif [ "$HELPER_STATUS" -ne 0 ]; then
+  CONTAINER_META=$(docker inspect -f '{{.RestartCount}} {{.State.StartedAt}}' blah2 2>/dev/null)
+fi
+read -r RESTART_COUNT CONTAINER_STARTED <<< "$CONTAINER_META"
 PREV_RESTART_COUNT=$(cat "$RESTART_COUNT_STATE" 2>/dev/null)
 [ -n "$RESTART_COUNT" ] && echo "$RESTART_COUNT" > "$RESTART_COUNT_STATE"
 
@@ -61,7 +69,6 @@ fi
 # whether the restart just came from this script or a GUI config Apply.
 # Skipped while crash-looping (see above) so the recovery step below still runs.
 if [ "$CRASH_LOOPING" = false ]; then
-  CONTAINER_STARTED=$(docker inspect -f '{{.State.StartedAt}}' blah2 2>/dev/null)
   if [ -n "$CONTAINER_STARTED" ]; then
     STARTED_EPOCH=$(date -d "$CONTAINER_STARTED" +%s 2>/dev/null)
     NOW_EPOCH=$(date +%s)
@@ -74,8 +81,19 @@ fi
 # --max-time so an unresponsive API cannot stall this script indefinitely.
 # Without it a hung endpoint - the exact condition being checked for - leaves
 # one instance blocked while cron keeps starting more every 5 minutes.
-FIRST_CHAR=$(curl -s --max-time 10 127.0.0.1:3000/api/map | head -c1)
-TIMESTAMP=$(curl -s --max-time 10 127.0.0.1:3000/api/map | head -c23 | tail -c10)
+# The optional status endpoint serves the exact first 23 bytes of the current
+# map. Fall back to one original-map request when talking to an older API.
+MAP_HEADER=$(curl -fsS --max-time 10 127.0.0.1:3000/api/map-health 2>/dev/null)
+if [ $? -ne 0 ]; then
+  MAP_HEADER=$(curl -s --max-time 10 127.0.0.1:3000/api/map | head -c23)
+fi
+FIRST_CHAR=${MAP_HEADER:0:1}
+# Preserve the original head-23/tail-10 behavior, including short responses.
+if [ ${#MAP_HEADER} -gt 10 ]; then
+  TIMESTAMP=${MAP_HEADER: -10}
+else
+  TIMESTAMP=$MAP_HEADER
+fi
 CURR_TIMESTAMP=$(date +%s)
 DIFF_TIMESTAMP=$(($CURR_TIMESTAMP-$TIMESTAMP))
 
@@ -99,9 +117,22 @@ if [[ "$FIRST_CHAR" != "{" ]] || [[ $DIFF_TIMESTAMP -gt 60 ]]; then
     exit 0
   fi
 
-  docker compose -p $PROJECT -f $COMPOSE_FILE down
+  # The Pi 4 opt-in selector is root-owned and shared with the boot and GUI
+  # units. Validate it only when recovery is actually needed. If it is absent,
+  # keep the original single-file Compose invocation.
+  COMPOSE_SELECTOR=/etc/owl/retina-compose.env
+  if [ -e "$COMPOSE_SELECTOR" ] || [ -L "$COMPOSE_SELECTOR" ]; then
+    [ -r "$COMPOSE_SELECTOR" ] || exit 1
+    . "$COMPOSE_SELECTOR" || exit 1
+    export COMPOSE_FILE COMPOSE_PROFILES
+    /usr/local/libexec/owl-retina-compose-check || exit 1
+    cd "$(dirname "${COMPOSE_FILE%%:*}")" || exit 1
+    COMPOSE_ARGS=(-p "$PROJECT")
+  fi
+
+  docker compose "${COMPOSE_ARGS[@]}" down
   kill -9 $(pgrep -f "sdrplay_apiService") 2>/dev/null || true
   systemctl restart sdrplay.service
-  docker compose -p $PROJECT -f $COMPOSE_FILE up -d
+  docker compose "${COMPOSE_ARGS[@]}" up -d
   echo "Successfully restarted blah2"
 fi

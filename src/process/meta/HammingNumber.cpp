@@ -1,6 +1,6 @@
 #include "HammingNumber.h"
 
-bool HammingNumber::operator!=(const HammingNumber &other) const
+bool HammingNumber::operator!=(const HammingNumber &) const
 {
   return true;
 }

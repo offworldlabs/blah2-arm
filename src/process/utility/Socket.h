@@ -37,7 +37,7 @@ public:
     /// @return Void.
     ~Socket();
 
-    /// @brief Helper function to send data in chunks.
+    /// @brief Send the complete frame, retrying short writes. Throws on failure.
     /// @param data String of complete data to send.
     /// @return Void.
     void sendData(const std::string& data);

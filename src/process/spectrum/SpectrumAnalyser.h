@@ -12,6 +12,7 @@
 #include "data/IqData.h"
 #include <stdint.h>
 #include <fftw3.h>
+#include <vector>
 
 class SpectrumAnalyser
 {
@@ -21,6 +22,9 @@ private:
 
   /// @brief Minimum bandwidth of frequency bin (Hz).
   double bandwidth;
+
+  /// @brief Capture center frequency (Hz).
+  double centerFrequency;
 
   /// @brief Decimation factor.
   uint32_t decimation;
@@ -37,15 +41,21 @@ private:
   /// @brief Number of samples in decimated spectrum.
   uint32_t nSpectrum;
 
-  /// @brief Resolution of spectrum (Hz).
+  /// @brief Resolution of the source FFT (Hz).
   double resolution;
+
+  // Sparse, regularly spaced output bins use a weighted input fold.
+  bool folded;
+  std::vector<std::complex<double>> blockPhase, binPhase;
 
 public:
   /// @brief Constructor.
   /// @param n Number of samples on input.
   /// @param bandwidth Minimum bandwidth of frequency bin (Hz).
   /// @return The object.
-  SpectrumAnalyser(uint32_t n, double bandwidth);
+  SpectrumAnalyser(uint32_t n, double bandwidth, double centerFrequency, double sampleRate);
+  SpectrumAnalyser(const SpectrumAnalyser&) = delete;
+  SpectrumAnalyser& operator=(const SpectrumAnalyser&) = delete;
 
   /// @brief Destructor.
   /// @return Void.
@@ -55,6 +65,9 @@ public:
   /// @param x Reference samples.
   /// @return Void.
   void process(IqData *x);
+
+  /// Update metadata after a CPI-latched retune; FFT geometry is unchanged.
+  void set_center_frequency(double frequency);
 };
 
 #endif

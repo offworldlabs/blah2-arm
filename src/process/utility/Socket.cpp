@@ -19,14 +19,8 @@ Socket::~Socket()
 }
 
 void Socket::sendData(const std::string& data) {
-    asio::error_code err;
-
-    for (std::size_t i = 0; i < (data.size() + MTU - 1) / MTU; ++i) {
-        std::string subdata = data.substr(i * MTU, MTU);
-        socket.write_some(asio::buffer(subdata, subdata.size()), err);
-
-        if (err) {
-            std::cerr << "Error sending data: " << err.message() << std::endl;
-        }
-    }
+    // ASIO's composed write retries short writes until the whole frame has
+    // been sent. It borrows this string rather than allocating 1KiB substrings.
+    // Failure propagates to the caller: continuing would corrupt JSON framing.
+    asio::write(socket, asio::buffer(data.data(), data.size()));
 }

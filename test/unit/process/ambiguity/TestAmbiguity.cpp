@@ -89,7 +89,7 @@ TEST_CASE("Constructor", "[constructor]")
     CHECK(ambiguity.get_n_corr() == 3322);
     CHECK(ambiguity.get_n_delay_bins() == delayMax + std::abs(delayMin) + 1);
     CHECK(ambiguity.get_n_doppler_bins() == 301);
-    CHECK(ambiguity.get_nfft() == 6643);
+    CHECK(ambiguity.get_nfft() == 3622);
 }
 
 /// @brief Test constructor with rounded Hamming number FFT length.
@@ -112,7 +112,7 @@ TEST_CASE("Constructor_Round", "[constructor]")
     CHECK(ambiguity.get_n_corr() == 3322);
     CHECK(ambiguity.get_n_delay_bins() == delayMax + std::abs(delayMin) + 1);
     CHECK(ambiguity.get_n_doppler_bins() == 301);
-    CHECK(ambiguity.get_nfft() == 6750);
+    CHECK(ambiguity.get_nfft() == 3645);
 }
 
 /// @brief Test simple ambiguity processing.
