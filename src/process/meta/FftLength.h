@@ -19,11 +19,16 @@ inline constexpr int kBackStageThreads = 2;
 // The clutter filter plans its own transforms at this instead.
 //
 // Its blocks are 2048 points, 32 KB, and a second thread costs more in sync
-// than it recovers on a transform that small. Measured on a Pi 5 at the
-// shipped geometry, the whole filter takes 173.0 ms on one thread against
-// 200.1 on two, while the single-transform code it replaces went the other way
-// (477.5 on one, 339.9 on two). So the old code wanted the threads and the new
-// code does not, and the right comparison is each at its own best.
+// than it recovers on a transform that small. The single-transform code it
+// replaces went the other way and wanted the threads (477.5 ms on one against
+// 339.9 on two), so the right comparison is each at its own best.
+//
+// Confirmed in situ on a live node rather than in isolation, at both of the
+// two fastest block lengths:
+//
+//   block   1 thread   2 threads
+//    2048     172.6      226.8
+//    4096     184.6      195.1
 //
 // It also gives a core back: the front stage no longer needs two for the
 // filter, which is the stage the pipeline is bottlenecked on.
@@ -40,11 +45,22 @@ inline constexpr int kClutterBlockThreads = 1;
 // probe 11 GB/s against 2.8 with blah2 running).
 //
 // Computing the same quantities block by block keeps each transform inside L2.
-// 2048 points is 32 KB against a 512 KB L2. Measured on a Pi 5 at the shipped
-// geometry, the transforms go from 225 ms to 135 ms idle and 658 to 237 under
-// load. The optimum moves with load (8192 idle, 2048 loaded) because the bus
-// is the scarce resource, so this is the loaded figure: that is the condition
-// the radar actually runs in.
+// 2048 points is 32 KB against a 512 KB L2.
+//
+// Swept in situ on a live node, on the real binary under the real pipeline,
+// reading the stage time blah2 reports for itself. That matters because the
+// optimum moves with contention (8192 on an idle board) and because a
+// benchmark running *alongside* blah2 contends for the bus differently from
+// blah2 contending with its own second stage:
+//
+//   block   clutter_filter (ms, 1 thread)
+//    1024       195.2
+//    2048       172.6   <- minimum
+//    4096       184.6
+//    8192       186.1
+//   16384       209.5
+//
+// against 491.7 ms for the single-transform code it replaces.
 inline constexpr uint32_t kClutterBlockLength = 2048;
 
 // Block length for a correlation or convolution over `nSamples` points with
