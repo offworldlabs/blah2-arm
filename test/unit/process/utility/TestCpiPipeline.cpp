@@ -103,8 +103,8 @@ int main()
     }
   });
 
-  // Back stage: everything downstream, in capture order, holding the state the
-  // tracker would.
+  // Back stage: everything downstream, in capture order, holding whatever
+  // state persists across CPIs.
   std::thread back([&] {
     uint64_t lastSeen = 0;
     bool first = true;

@@ -144,7 +144,9 @@ The radar processing output is available on [http://localhost:49152](http://loca
 
 ## Future Work
 
-- Add a tracker in delay-Doppler space.
+- Tracking is deliberately out of scope here. blah2's built-in tracker was
+  removed because tracking is done downstream by the retina-tracker sidecar,
+  which is fed detections rather than tracks.
 - Support for the HackRF/RTL-SDR using a front-end mixer, to sample 2 RF channels in 1 stream.
 - Support for the Kraken SDR with all 5 channels.
 - Add [SoapySDR](https://github.com/pothosware/SoapySDR) support for the [C++ API](https://github.com/pothosware/SoapySDR/wiki/Cpp_API_Example) to include a wide range of SDR platforms.

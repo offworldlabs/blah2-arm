@@ -81,7 +81,6 @@ const PORT = config.network.ports.api;
 const HOST = '::';
 var map = '';
 var detection = '';
-var track = '';
 var timestamp = '';
 var timing = '';
 var iqdata = '';
@@ -89,10 +88,9 @@ var iqdata = '';
 // `data_x = data_x + msg`, so an undefined seed prefixes the literal string
 // "undefined" onto the first message after every start. On the detection socket
 // that made JSON.parse throw, so the first frame was always discarded and
-// /api/detection briefly served the garbage; the same applied to all six.
+// /api/detection briefly served the garbage; the same applied to all five.
 var data_map = '';
 var data_detection = '';
-var data_tracker = '';
 var data_timestamp = '';
 var data_timing = '';
 var data_iqdata = '';
@@ -116,9 +114,6 @@ app.get('/api/map', (req, res) => {
 });
 app.get('/api/detection', (req, res) => {
   res.send(detection);
-});
-app.get('/api/tracker', (req, res) => {
-  res.send(track);
 });
 app.get('/api/timestamp', (req, res) => {
   res.send(timestamp);
@@ -399,22 +394,6 @@ const server_detection = net.createServer((socket)=>{
   })
 });
 server_detection.listen(config.network.ports.detection);
-
-// tcp listener tracker
-const server_tracker = net.createServer((socket)=>{
-  socket.on("data",(msg)=>{
-      data_tracker = data_tracker + msg.toString();
-      if (data_tracker.slice(-1) === "}")
-      {
-        track = data_tracker;
-        data_tracker = '';
-      }
-  });
-  socket.on("close",()=>{
-      console.log("Connection closed.");
-  })
-});
-server_tracker.listen(config.network.ports.track);
 
 // tcp listener timestamp
 const server_timestamp = net.createServer((socket)=>{
