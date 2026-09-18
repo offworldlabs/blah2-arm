@@ -40,8 +40,9 @@ WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
   blockTaps = new std::complex<double>[nBlock];
   blockConv = new std::complex<double>[nBlock];
 
-  // Plan the blocks at their own thread count and put the planner back, so a
-  // caller that set a stage-wide count still gets it for everything else.
+  // Plan the blocks at their own thread count. There is no caller-set count to
+  // preserve: this is the front stage's only transform, so nothing else in the
+  // program depends on what the planner held when the constructor was entered.
   fftw_plan_with_nthreads(blah2::kClutterBlockThreads);
 
   auto plan = [&](std::complex<double> *buffer, int direction) {
@@ -57,7 +58,10 @@ WienerHopf::WienerHopf(int32_t _delayMin, int32_t _delayMax, uint32_t _nSamples)
   fftBlockConv = plan(blockConv, FFTW_FORWARD);
   ifftBlockConv = plan(blockConv, FFTW_BACKWARD);
 
-  fftw_plan_with_nthreads(blah2::kFrontStageThreads);
+  // Put the planner back to what every plan site outside this class wants, so
+  // a future one added without an explicit count cannot silently inherit the
+  // single thread that suits 2048-point blocks and nothing else.
+  fftw_plan_with_nthreads(blah2::kBackStageThreads);
 }
 
 WienerHopf::~WienerHopf()

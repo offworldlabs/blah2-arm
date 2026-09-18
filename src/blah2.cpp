@@ -154,9 +154,10 @@ int main(int argc, char **argv)
   tree["process"]["ambiguity"]["delayMax"] >> delayMax;
   tree["process"]["ambiguity"]["dopplerMin"] >> dopplerMin;
   tree["process"]["ambiguity"]["dopplerMax"] >> dopplerMax;
-  // FFTW bakes the thread count into the plan, so the two stages get their own
-  // share of the cores by planning with different counts. Ambiguity and the
-  // spectrum analyser run in the back stage, the clutter filter in the front.
+  // FFTW bakes the thread count into the plan, so each consumer gets its share
+  // of the cores by planning with its own count. Ambiguity and the spectrum
+  // analyser both run in the back stage; the clutter filter is the front
+  // stage's only transform and chooses its own count inside its constructor.
   fftw_plan_with_nthreads(blah2::kBackStageThreads);
   Ambiguity *ambiguity = new Ambiguity(delayMin, delayMax,
     dopplerMin, dopplerMax, fs, nSamples, roundHamming);
@@ -165,7 +166,9 @@ int main(int argc, char **argv)
   int32_t delayMinClutter, delayMaxClutter;
   tree["process"]["clutter"]["delayMin"] >> delayMinClutter;
   tree["process"]["clutter"]["delayMax"] >> delayMaxClutter;
-  fftw_plan_with_nthreads(blah2::kFrontStageThreads);
+  // No planner call here: WienerHopf sets kClutterBlockThreads for its own
+  // plans and restores the default afterwards, so anything set here would be
+  // overwritten before it reached a plan.
   WienerHopf *filter = new WienerHopf(delayMinClutter, delayMaxClutter, nSamples);
 
   // setup process detection

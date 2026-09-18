@@ -5,18 +5,19 @@
 
 namespace blah2 {
 
-// The two processing stages run concurrently, so their plans have to share the
-// four cores rather than each claiming all of them. The ambiguity batch
-// transforms are the ones that pay for threads.
+// The thread count every FFTW plan outside the clutter filter is built with.
 //
-// Note the clutter filter no longer uses this: it plans at
-// kClutterBlockThreads below. That leaves the front stage count governing the
-// spectrum analyser alone, so there is room to retune it now that the stage's
-// largest consumer has stopped competing for the same cores.
-inline constexpr int kFrontStageThreads = 2;
+// Both of those plan sites, the ambiguity processor and the spectrum analyser,
+// run in the back stage. The front stage's only FFTW consumer is the clutter
+// filter, and it selects its own count below, so there is deliberately no
+// front-stage constant: there is nothing left for one to govern.
+//
+// The two stages run concurrently and so share four cores rather than each
+// claiming all of them. The ambiguity batch transforms are the ones that pay
+// for threads.
 inline constexpr int kBackStageThreads = 2;
 
-// The clutter filter plans its own transforms at this instead.
+// The thread count the clutter filter plans its own transforms at.
 //
 // Its blocks are 2048 points, 32 KB, and a second thread costs more in sync
 // than it recovers on a transform that small. The single-transform code it
@@ -31,7 +32,8 @@ inline constexpr int kBackStageThreads = 2;
 //    4096     184.6      195.1
 //
 // It also gives a core back: the front stage no longer needs two for the
-// filter, which is the stage the pipeline is bottlenecked on.
+// filter, which is the stage the pipeline is bottlenecked on. That is why the
+// front-stage constant is gone rather than merely unused.
 inline constexpr int kClutterBlockThreads = 1;
 
 // The block length the clutter correlations and convolution are computed at.
