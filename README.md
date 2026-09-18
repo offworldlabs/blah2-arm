@@ -141,6 +141,7 @@ The radar processing output is available on [http://localhost:49152](http://loca
 ## Documentation
 
 - See `doxygen` pages hosted at [http://doc.30hours.dev/blah2](http://doc.30hours.dev/blah2).
+- The API in `api/server.js` is described by `api/openapi.json`, an OpenAPI document generated from its routes by [swagger-autogen](https://swagger-autogen.github.io/docs/). After changing a route, regenerate it with `npm install && npm run openapi` in `api/` and commit the result; CI (`.github/workflows/api.yml`) fails while the committed copy is stale. Summaries, descriptions and schemas can be added per route with `#swagger` comments in `server.js`.
 
 ## Future Work
 

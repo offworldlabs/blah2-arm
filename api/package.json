@@ -5,10 +5,15 @@
   "author": "github.com/30hours",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "openapi": "node openapi.js",
+    "openapi:check": "node openapi.js --check"
   },
   "dependencies": {
     "express": "^4.16.1",
     "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "swagger-autogen": "2.23.7"
   }
 }
