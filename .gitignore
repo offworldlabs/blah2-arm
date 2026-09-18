@@ -14,7 +14,6 @@ artifacts/
 manifests/
 test-config/
 api/node_modules/
-api/package-lock.json
 
 # A/B testing local documentation and scripts
 TESTING_AB.md

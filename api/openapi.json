@@ -1,0 +1,383 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "blah2 API",
+    "version": "1.0.0",
+    "description": "HTTP API of blah2-api, which runs on each RETINA node. Generated from api/server.js by api/openapi.js."
+  },
+  "servers": [
+    {
+      "url": "http://{node}:3000",
+      "description": "blah2-api on the node, listening on all interfaces (host networking)",
+      "variables": {
+        "node": {
+          "default": "localhost",
+          "description": "localhost on the node itself, or the node's mDNS name (e.g. ret4c844c20.local) from the same network"
+        }
+      }
+    }
+  ],
+  "tags": [
+    {
+      "name": "api",
+      "description": "Latest radar output relayed from blah2 over TCP (map, detections, tracks, timestamp, timing, IQ metadata), the ADS-B truth flag, and ADS-B aircraft projected into bistatic delay-Doppler."
+    },
+    {
+      "name": "stash",
+      "description": "Short histories built by polling /api on each new timestamp: the map max-held over the last 20 CPIs, detections from the last 300 s, and spectrum and timing for the last 20 CPIs."
+    },
+    {
+      "name": "capture",
+      "description": "Control channel between the blah2 core and this API. blah2 polls the IQ recording flag and pending retune, and posts retune acks and rejections, RF overload and peak dBFS; clients request a retune with POST /capture/retune and read the retune, overload and RF status back."
+    },
+    {
+      "name": "health",
+      "description": "Answers whenever the Express server is up, whatever the state of blah2."
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/map": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/detection": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/timestamp": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/timing": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/iqdata": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/stash/map": {
+      "get": {
+        "tags": [
+          "stash"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/stash/detection": {
+      "get": {
+        "tags": [
+          "stash"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/stash/iqdata": {
+      "get": {
+        "tags": [
+          "stash"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/stash/timing": {
+      "get": {
+        "tags": [
+          "stash"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/capture": {
+      "get": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/capture/retune": {
+      "get": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "default": {
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fc": {
+                    "example": "any"
+                  },
+                  "gainReductionA": {
+                    "example": "any"
+                  },
+                  "gainReductionB": {
+                    "example": "any"
+                  },
+                  "lnaState": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/capture/retune/ack": {
+      "post": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/capture/retune/reject": {
+      "post": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/capture/retune/status": {
+      "get": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/capture/overload-status": {
+      "post": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/capture/rf-status": {
+      "post": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "capture"
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/adsb2dd": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "parameters": [
+          {
+            "name": "detection_ts",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        }
+      }
+    },
+    "/api/adsb2dd/diagnostic": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "description": "",
+        "parameters": [
+          {
+            "name": "detection_ts",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        }
+      }
+    }
+  }
+}
