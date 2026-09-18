@@ -1,0 +1,34 @@
+name: api
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - '.github/workflows/api.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - '.github/workflows/api.yml'
+
+jobs:
+  openapi:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20  # matches api/Dockerfile
+
+      # api/package-lock.json is gitignored, so this resolves package.json;
+      # swagger-autogen itself is pinned exactly
+      - run: npm install --no-audit --no-fund
+
+      - name: Check api/openapi.json matches server.js
+        run: npm run openapi:check

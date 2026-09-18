@@ -11,7 +11,8 @@ WORKDIR /usr/src/app
 # where available (npm@5+)
 COPY api/package*.json ./
 
-RUN npm install
+# devDependencies only generate openapi.json, so they stay out of the image
+RUN npm install --omit=dev
 # If you are building your code for production
 # RUN npm ci --only=production
 
