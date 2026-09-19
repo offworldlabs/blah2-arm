@@ -50,14 +50,12 @@ add_executable(blah2
   src/process/detection/CfarDetector1D.cpp
   src/process/detection/Centroid.cpp
   src/process/detection/Interpolate.cpp
-  src/process/tracker/Tracker.cpp
   src/process/spectrum/SpectrumAnalyser.cpp
   src/process/meta/HammingNumber.cpp
   src/process/utility/Socket.cpp
   src/data/IqData.cpp
   src/data/Map.cpp
   src/data/Detection.cpp
-  src/data/Track.cpp
   src/data/meta/Timing.cpp
 )
 
@@ -88,18 +86,6 @@ target_link_libraries(testAmbiguity PRIVATE
   fftw3_threads
 )
 set_target_properties(testAmbiguity PROPERTIES 
-  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
-
-add_executable(testTracker
-  test/unit/process/tracker/TestTracker.cpp
-  src/data/Detection.cpp
-  src/data/Track.cpp
-  src/process/tracker/Tracker.cpp
-)
-target_link_libraries(testTracker PRIVATE 
-  Catch2::Catch2WithMain
-)
-set_target_properties(testTracker PROPERTIES 
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
 
 add_executable(testHammingNumber
@@ -192,7 +178,6 @@ set_target_properties(testStageOrder PROPERTIES
 
 # TODO: Unsure if will be using CTest.
 add_test(NAME testAmbiguity COMMAND testAmbiguity)
-add_test(NAME testTracker COMMAND testTracker)
 add_test(NAME testClutterFft COMMAND testClutterFft)
 add_test(NAME testJsonKm COMMAND testJsonKm)
 add_test(NAME testAmbiguityIndexing COMMAND testAmbiguityIndexing)

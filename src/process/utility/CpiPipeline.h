@@ -3,9 +3,9 @@
 /// @details The radar loop used to run every stage of a CPI back to back, so
 /// throughput was the sum of the stages. Splitting it at the clutter filter
 /// makes throughput the slowest stage instead. Output is unchanged: each stage
-/// is deterministic, slots carry one CPI's state end to end, and everything
-/// holding state across CPIs (the tracker) stays inside one serial stage, so
-/// CPIs are still finished in the order they were captured.
+/// is deterministic, slots carry one CPI's state end to end, and anything
+/// holding state across CPIs stays inside one serial stage, so CPIs are still
+/// finished in the order they were captured.
 /// @author Josh Poole
 
 #ifndef CPIPIPELINE_H
@@ -51,8 +51,8 @@ struct CpiSlot
 
   /// @brief True if a retune landed on this CPI.
   /// @details Latched by the front stage at extract rather than acted on there,
-  /// because the tracker it resets lives in the back stage. Consuming the flag
-  /// in one stage and acting on it in the other would apply the reset to
+  /// so the new frequency is adopted against the CPI it applies to. Consuming
+  /// the flag in one stage and acting on it in the other would apply it to
   /// whichever CPI happened to be in flight.
   bool fcChanged = false;
 

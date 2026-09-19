@@ -1,9 +1,10 @@
 /// @file TuneState.h
 /// @brief Cross-thread handoff for live retune events.
 /// @details Set by Capture's retune-poll thread after RspDuo::retune()
-/// applies a changed center frequency. Consumed once per CPI by blah2.cpp's
-/// processing loop to refresh Tracker::lambda and clear stale tracks.
-/// Gain-only retunes never touch this — same geometry, tracks remain valid.
+/// applies a changed center frequency. Latched once per CPI by blah2.cpp's
+/// front stage so the new frequency is adopted against the CPI it applies to,
+/// in capture order, rather than whenever the retune happened to land.
+/// Gain-only retunes never touch this: same geometry, nothing to refresh.
 /// @author 30hours
 
 #ifndef TUNESTATE_H

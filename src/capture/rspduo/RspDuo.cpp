@@ -277,9 +277,9 @@ bool RspDuo::retune(uint32_t _fc, int _gainReductionA, int _gainReductionB,
   if (replay_mode_fg)
   {
     // No real SDRplay device in replay mode (chosenDevice/deviceParams/
-    // chParams are never populated) — simulate a successful retune against
-    // local state only, so the ack/TuneState/tracker-reset chain is
-    // exercisable without hardware.
+    // chParams are never populated). Simulate a successful retune against
+    // local state only, so the ack/TuneState chain is exercisable without
+    // hardware.
     fc = _fc;
     gain_reduction_nr_a = _gainReductionA;
     gain_reduction_nr_b = _gainReductionB;
@@ -356,10 +356,9 @@ void RspDuo::replay(IqData *_buffer1, IqData *_buffer2, std::string _file, bool 
   buffer1 = _buffer1;
   buffer2 = _buffer2;
 
-  // No real device to update in replay mode — retune() simulates success
+  // No real device to update in replay mode. retune() simulates success
   // against local state instead of touching the (uninitialised) SDRplay
-  // pointers, so the retune/ack/tracker-reset chain is testable without
-  // hardware.
+  // pointers, so the retune/ack chain is testable without hardware.
   replay_mode_fg = true;
   device_ready_fg.store(true);
 

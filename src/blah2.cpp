@@ -7,18 +7,15 @@
 #include "data/Map.h"
 #include "data/Detection.h"
 #include "data/meta/Timing.h"
-#include "data/Track.h"
 #include "process/ambiguity/Ambiguity.h"
 #include "process/clutter/WienerHopf.h"
 #include "process/detection/CfarDetector1D.h"
 #include "process/detection/Centroid.h"
 #include "process/detection/Interpolate.h"
 #include "process/spectrum/SpectrumAnalyser.h"
-#include "process/tracker/Tracker.h"
 #include "process/utility/CpiPipeline.h"
 #include "process/utility/Socket.h"
 #include "process/utility/TuneState.h"
-#include "data/meta/Constants.h"
 
 #include <ryml/ryml.hpp>
 #include <ryml/ryml_std.hpp> // optional header, provided for std:: interop
@@ -135,18 +132,16 @@ int main(int argc, char **argv)
   // setup socket
   sleep(5);
   uint16_t port_map, port_detection, port_timestamp, 
-    port_timing, port_iqdata, port_track;
+    port_timing, port_iqdata;
   std::string ip;
   tree["network"]["ports"]["map"] >> port_map;
   tree["network"]["ports"]["detection"] >> port_detection;
-  tree["network"]["ports"]["track"] >> port_track;
   tree["network"]["ports"]["timestamp"] >> port_timestamp;
   tree["network"]["ports"]["timing"] >> port_timing;
   tree["network"]["ports"]["iqdata"] >> port_iqdata;
   tree["network"]["ip"] >> ip;
   Socket socket_map(ip, port_map);
   Socket socket_detection(ip, port_detection);
-  Socket socket_track(ip, port_track);
   Socket socket_timestamp(ip, port_timestamp);
   Socket socket_timing(ip, port_timing);
   Socket socket_iqdata(ip, port_iqdata);
@@ -190,32 +185,15 @@ int main(int argc, char **argv)
   tree["process"]["detection"]["nCentroid"] >> nCentroid;
   Centroid *centroid = new Centroid(nCentroid, nCentroid, 1/tCpi);
 
-  // setup process tracker
-  uint8_t m, n, nDelete;
-  double maxAcc, rangeRes, lambda;
-  std::string smooth;
-  tree["process"]["tracker"]["initiate"]["M"] >> m;
-  tree["process"]["tracker"]["initiate"]["N"] >> n;
-  tree["process"]["tracker"]["delete"] >> nDelete;
-  tree["process"]["tracker"]["initiate"]["maxAcc"] >> maxAcc;
-  rangeRes = (double)Constants::c/fs;
-  lambda = (double)Constants::c/fc;
-  Tracker *tracker = new Tracker(m, n, nDelete, ambiguity->get_cpi(), maxAcc, rangeRes, lambda);
-
   // setup process spectrum analyser
   double spectrumBandwidth = 2000;
   fftw_plan_with_nthreads(blah2::kBackStageThreads);
   SpectrumAnalyser *spectrumAnalyser = new SpectrumAnalyser(nSamples, spectrumBandwidth);
 
   // process options
-  bool isClutter, isDetection, isTracker;
+  bool isClutter, isDetection;
   tree["process"]["clutter"]["enable"] >> isClutter;
   tree["process"]["detection"]["enable"] >> isDetection;
-  tree["process"]["tracker"]["enable"] >> isTracker;
-  if (!isDetection)
-  {
-    isTracker = false;
-  }
 
   // setup output data
   bool saveMap;
@@ -272,8 +250,8 @@ int main(int argc, char **argv)
         buffer2->unlock();
         timing_helper(slot->timingName, slot->timingTime, slot->time, "extract_buffer");
 
-        // Latch a live retune against the CPI it applies to rather than acting
-        // on it here: the tracker it resets runs in the back stage.
+        // Latch a live retune against the CPI it applies to rather than
+        // acting on it here, so the change lands in capture order.
         slot->fcChanged = g_tuneState.fcChanged.exchange(false);
         if (slot->fcChanged)
         {
@@ -304,15 +282,12 @@ int main(int argc, char **argv)
     });
 
   // Back stage: everything downstream of the clutter filter, in capture order.
-  // The tracker's state stays here, so it still sees every CPI exactly once and
-  // in sequence.
   std::thread t3([&]{
       Map<std::complex<double>> *map;
       std::unique_ptr<Detection> detection;
       std::unique_ptr<Detection> detection1;
       std::unique_ptr<Detection> detection2;
-      std::unique_ptr<Track> track;
-      std::string mapJson, detectionJson, jsonTracker, jsonIqData, jsonTiming;
+      std::string mapJson, detectionJson, jsonIqData, jsonTiming;
       uint64_t previousCpiEnd = 0;
 
       while (true)
@@ -326,13 +301,10 @@ int main(int argc, char **argv)
         // the bottleneck; large means the clutter filter is.
         timing_helper(timing_name, timing_time, time, "pipeline_wait");
 
-        // live retune: refresh wavelength and drop stale tracks on fc change
+        // live retune: adopt the new centre frequency for this CPI onwards
         if (slot->fcChanged)
         {
           fc = slot->fc;
-          lambda = (double)Constants::c/fc;
-          tracker->set_lambda(lambda);
-          tracker->reset();
         }
 
         // spectrum. Reads the reference channel, which the clutter filter only
@@ -356,13 +328,6 @@ int main(int argc, char **argv)
           timing_helper(timing_name, timing_time, time, "detector");
         }
 
-        // tracker process
-        if (isTracker)
-        {
-          track = tracker->process(detection.get(), time[0]/1000);
-          timing_helper(timing_name, timing_time, time, "tracker");
-        }
-
         // output IqData meta data
         jsonIqData = slot->x->to_json(time[0]/1000);
         socket_iqdata.sendData(jsonIqData);
@@ -380,13 +345,6 @@ int main(int argc, char **argv)
         {
           detectionJson = detection->to_json_km(time[0]/1000, fs);
           socket_detection.sendData(detectionJson);
-        }
-
-        // output tracker data
-        if (isTracker)
-        {
-          jsonTracker = track->to_json(time[0]/1000);
-          socket_track.sendData(jsonTracker);
         }
 
         // output radar data timer
