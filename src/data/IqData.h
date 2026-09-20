@@ -1,17 +1,36 @@
 /// @file IqData.h
 /// @class IqData
 /// @brief A class to store IQ data.
-/// @details Implements a FIFO queue to store IQ samples.
+/// @details Implements a fixed-capacity FIFO of IQ samples. Storage is one
+/// contiguous buffer of @c n samples, allocated once in the constructor and
+/// never reallocated: the queue is a ring over it, so pushing, popping and
+/// clearing only move two indices.
+///
+/// It used to hold a @c std::deque. libstdc++ chunks a deque at 512 bytes, so
+/// 32 of these 16-byte samples, which made a 1e6-sample CPI 31,250 separate
+/// allocations. Across both channels the pipeline churned roughly 375,000
+/// chunk malloc/free pairs per CPI, and on a Pi 5 that was measured at about
+/// 20 ms of every CPI. Reads were never the problem: indexed access through a
+/// deque measured the same as through a vector, because every read here is
+/// sequential with a wrap. The cost was all in push, pop and clear.
+///
+/// The ring trades memory for CPU, deliberately. It commits `n` samples per
+/// object at construction, where the deque only ever materialised what it held
+/// and shared that memory between objects through the allocator. Live on a Pi 5
+/// that is +45 MB of RSS at a 300 Hz doppler span and +41 MB at 1000 Hz, which
+/// buys about 8% of per-CPI work and 8 to 16 points of CPU. Most of the cost is
+/// the capture buffers committing a `tBuffer` of 1.5 CPIs that a node keeping up
+/// never uses, so sizing those to actual need would recover the bulk of it.
 /// @author 30hours
 
 #ifndef IQDATA_H
 #define IQDATA_H
 
-#include <stdint.h>
-#include <deque>
-#include <vector>
 #include <complex>
 #include <mutex>
+#include <stdint.h>
+#include <string>
+#include <vector>
 
 class IqData
 {
@@ -22,8 +41,14 @@ private:
   /// @brief True if should not push to buffer (mutex).
   std::mutex mutex_lock;
 
-  /// @brief Pointer to IQ data.
-  std::deque<std::complex<double>> *data;
+  /// @brief Sample storage, exactly n entries, allocated once.
+  std::vector<std::complex<double>> data;
+
+  /// @brief Index in data of the oldest sample held.
+  uint32_t head;
+
+  /// @brief Number of samples currently held.
+  uint32_t count;
 
   /// @brief Minimum value.
   double min;
@@ -40,6 +65,17 @@ private:
   /// @brief Frequency vector (Hz).
   std::vector<double> frequency;
 
+  /// @brief Reduce an index modulo the capacity.
+  /// @details A conditional subtract rather than a division, which is correct
+  /// only while index < 2n. Every caller satisfies that: head < n and the
+  /// offset added to it is at most count, which is at most n.
+  /// @param index Index to reduce.
+  /// @return Index in [0, n).
+  inline uint32_t wrap(uint64_t index) const
+  {
+    return static_cast<uint32_t>(index >= n ? index - n : index);
+  }
+
 public:
   /// @brief Constructor.
   /// @param n Number of samples.
@@ -48,11 +84,11 @@ public:
 
   /// @brief Getter for maximum number of samples.
   /// @return Maximum number of samples.
-  uint32_t get_n();
+  uint32_t get_n() const { return n; }
 
   /// @brief Getter for current data length.
   /// @return Number of samples currently in data.
-  uint32_t get_length();
+  uint32_t get_length() const { return count; }
 
   /// @brief Locker for mutex.
   /// @return Void.
@@ -62,19 +98,25 @@ public:
   /// @return Void.
   void unlock();
 
-  /// @brief Getter for data.
+  /// @brief Sample at an offset from the front, counting in FIFO order.
+  /// @details Unchecked, because the callers are million-iteration stage
+  /// loops that have already bounded i by get_length(). Reading at or beyond
+  /// get_length() returns a stale sample rather than throwing; the deque form
+  /// was equally undefined there.
+  /// @param i Offset from the front.
+  /// @return The sample.
+  inline const std::complex<double> &operator[](uint32_t i) const
+  {
+    return data[wrap(uint64_t(head) + i)];
+  }
+
+  /// @brief Getter for data, copied out in FIFO order.
+  /// @details Copies, so it is not for the per-CPI path. Stage code should
+  /// index with operator[], which copies nothing.
   /// @return IQ data.
-  std::deque<std::complex<double>> get_data();
+  std::vector<std::complex<double>> get_data() const;
 
-  /// @brief Read-only view of the data, copying nothing.
-  /// @details Prefer this to get_data() on the hot path: a CPI is a million
-  /// samples, so a copy is 16 MB and roughly 31,000 deque-chunk allocations.
-  /// The caller must not hold the reference across anything that mutates the
-  /// queue (push_back, pop_front, clear).
-  /// @return Const reference to the IQ data.
-  const std::deque<std::complex<double>> &view_data() const;
-
-  /// @brief Push a sample to the queue.
+  /// @brief Push a sample to the queue, dropping the oldest when full.
   /// @param sample A single sample.
   /// @return Void.
   void push_back(std::complex<double> sample);
@@ -83,11 +125,9 @@ public:
   /// @return Sample from the front of the queue.
   std::complex<double> pop_front();
 
-  /// @brief Print to stdout (debug).
-  /// @return Void.
-  void print();
-
   /// @brief Clear samples from the queue.
+  /// @details Constant time. It does not scrub the storage, so samples past
+  /// get_length() remain readable through operator[]; nothing may read there.
   /// @return Void.
   void clear();
 

@@ -1,6 +1,7 @@
 #include "IqData.h"
-#include <iostream>
-#include <cstdlib>
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
 
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
@@ -10,18 +11,15 @@
 // constructor
 IqData::IqData(uint32_t _n)
 {
+  if (_n == 0)
+    throw std::invalid_argument("IqData needs a non-zero capacity");
   n = _n;
-  data = new std::deque<std::complex<double>>;
-}
-
-uint32_t IqData::get_n()
-{
-  return n;
-}
-
-uint32_t IqData::get_length()
-{
-  return data->size();
+  // The one allocation this object ever makes. Committing it here rather than
+  // growing into it also means RSS is flat from the first CPI instead of
+  // climbing while the buffer fills.
+  data.assign(n, std::complex<double>(0.0, 0.0));
+  head = 0;
+  count = 0;
 }
 
 void IqData::lock()
@@ -34,55 +32,54 @@ void IqData::unlock()
   mutex_lock.unlock();
 }
 
-std::deque<std::complex<double>> IqData::get_data()
+std::vector<std::complex<double>> IqData::get_data() const
 {
-  return *data;
-}
-
-const std::deque<std::complex<double>> &IqData::view_data() const
-{
-  return *data;
+  std::vector<std::complex<double>> out;
+  out.reserve(count);
+  // At most two contiguous runs: head to the end of storage, then the wrap.
+  const uint32_t first = std::min(count, n - head);
+  out.insert(out.end(), data.begin() + head, data.begin() + head + first);
+  if (first < count)
+    out.insert(out.end(), data.begin(), data.begin() + (count - first));
+  return out;
 }
 
 void IqData::push_back(std::complex<double> sample)
 {
-  if (data->size() < n)
+  if (count == n)
   {
-    data->push_back(sample);
+    // Full, so drop the oldest to make room, exactly as the deque form did.
+    // The slot holding the front is also the one past the back, so a single
+    // write and a head bump does both halves.
+    data[head] = sample;
+    head = wrap(uint64_t(head) + 1);
   }
   else
   {
-    data->pop_front();
-    data->push_back(sample);
+    data[wrap(uint64_t(head) + count)] = sample;
+    count++;
   }
 }
 
 std::complex<double> IqData::pop_front()
 {
-  if (data->empty()) {
-    throw std::runtime_error("Attempting to pop from an empty deque");
-  }
-  std::complex<double> sample = data->front();
-  data->pop_front();
-  return sample;
-}
-void IqData::print()
-{
-  int n = data->size();
-  std::cout << data->size() << std::endl;
-  for (int i = 0; i < n; i++)
+  if (count == 0)
   {
-    std::cout << data->front() << std::endl;
-    data->pop_front();
+    throw std::runtime_error("Attempting to pop from an empty buffer");
   }
+  const std::complex<double> sample = data[head];
+  head = wrap(uint64_t(head) + 1);
+  count--;
+  return sample;
 }
 
 void IqData::clear()
 {
-  while (!data->empty())
-  {
-    data->pop_front();
-  }
+  // The deque form popped one sample at a time, which on a full CPI meant a
+  // million pops and 31,250 chunk frees, then the refill allocated them all
+  // back. Dropping the indices is the same thing in constant time.
+  head = 0;
+  count = 0;
 }
 
 void IqData::update_spectrum(std::vector<std::complex<double>> _spectrum)

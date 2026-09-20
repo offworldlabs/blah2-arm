@@ -17,7 +17,6 @@
 #include <cmath>
 #include <complex>
 #include <cstdio>
-#include <deque>
 #include <string>
 #include <vector>
 
@@ -53,7 +52,7 @@ static void fill(IqData* x, IqData* y, uint32_t n)
   }
 }
 
-static bool same(const std::deque<Complex>& a, const std::deque<Complex>& b)
+static bool same(const std::vector<Complex>& a, const std::vector<Complex>& b)
 {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); i++)
@@ -84,19 +83,19 @@ int main()
   {
     IqData x(n), y(n);
     fill(&x, &y, n);
-    const std::deque<Complex> before = x.view_data();
+    const std::vector<Complex> before = x.get_data();
 
     WienerHopf filter(delayMin, delayMax, n);
     require(filter.process(&x, &y), "clutter filter converged on the test signal");
-    require(same(before, x.view_data()),
+    require(same(before, x.get_data()),
             "reference channel bit-identical after the clutter filter");
 
     // Confirm the filter actually cancelled, so the check above is not vacuous.
     IqData xRaw(n), yRaw(n);
     fill(&xRaw, &yRaw, n);
     double residual = 0, signal = 0;
-    const auto& filtered = y.view_data();
-    const auto& raw = yRaw.view_data();
+    const auto filtered = y.get_data();
+    const auto raw = yRaw.get_data();
     for (uint32_t i = n / 2; i < n; i++)
     {
       residual += std::norm(filtered[i]);
@@ -128,7 +127,7 @@ int main()
     require(!spectrum_of(jsonBefore).empty(), "spectrum was actually produced");
     require(spectrum_of(jsonBefore) == spectrum_of(jsonAfter),
             "spectrum byte-identical whichever side of the filter it runs");
-    require(same(ya.view_data(), yb.view_data()),
+    require(same(ya.get_data(), yb.get_data()),
             "filtered surveillance channel identical under the reordering");
   }
 
@@ -156,7 +155,7 @@ int main()
       serial.push_back(v);
       pipelined.push_back(v);
     }
-    require(same(serial.view_data(), pipelined.view_data()),
+    require(same(serial.get_data(), pipelined.get_data()),
             "clear-then-refill matches the serial refill-with-eviction");
   }
 

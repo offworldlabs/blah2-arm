@@ -218,20 +218,16 @@ void WienerHopf::convolve(std::complex<double> *out)
 bool WienerHopf::process(IqData *x, IqData *y)
 {
   uint32_t i, j;
-  // Views, not copies: each of these was 16 MB and ~31,000 allocations a CPI.
-  // Both are read out into dataX/dataY immediately below and not touched
-  // again, so the later y->clear() cannot be observed through yData.
-  const std::deque<std::complex<double>> &xData = x->view_data();
-  const std::deque<std::complex<double>> &yData = y->view_data();
-
-  // change deque to std::complex
+  // Indexed straight out of the ring, copying nothing. Both channels are read
+  // out into dataX/dataY here and not touched again, so the later y->clear()
+  // cannot be observed through them.
   for (i = 0; i < nSamples; i++)
   {
     // Signed arithmetic: `i - delayMin` promotes to unsigned, so a positive
     // delayMin wraps at 2^32 and lands on the wrong sample.
     const int64_t shifted = (int64_t(i) - delayMin) % int64_t(nSamples);
-    dataX[i] = xData[shifted < 0 ? shifted + nSamples : shifted];
-    dataY[i] = yData[i];
+    dataX[i] = (*x)[static_cast<uint32_t>(shifted < 0 ? shifted + nSamples : shifted)];
+    dataY[i] = (*y)[i];
   }
 
   // auto-correlation vector a and cross-correlation vector b
