@@ -136,6 +136,13 @@ public:
   /// @return Void.
   void update_spectrum(std::vector<std::complex<double>> spectrum);
 
+  /// @brief Read-only access to the spectrum.
+  /// @details A plain vector in natural order, unlike the sample ring, so a
+  /// reference is meaningful here. to_json() reduces it to 2 decimal places of
+  /// dB, which is too coarse to compare implementations against each other.
+  /// @return Const reference to the spectrum.
+  const std::vector<std::complex<double>> &get_spectrum() const { return spectrum; }
+
   /// @brief Update the time differences and names.
   /// @param frequency Frequency vector.
   /// @return Void.

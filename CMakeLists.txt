@@ -188,7 +188,23 @@ target_link_libraries(testIqData PRIVATE
 set_target_properties(testIqData PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
 
+add_executable(testSpectrumFold
+  test/unit/process/spectrum/TestSpectrumFold.cpp
+  src/process/spectrum/SpectrumAnalyser.cpp
+  src/data/IqData.cpp
+)
+# armadillo is linked only to pick up the vcpkg include path, which is
+# where rapidjson lives; RAPIDJSON_INCLUDE_DIRS is NOTFOUND in this build.
+target_link_libraries(testSpectrumFold PRIVATE
+  armadillo
+  fftw3
+  fftw3_threads
+)
+set_target_properties(testSpectrumFold PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
 # TODO: Unsure if will be using CTest.
+add_test(NAME testSpectrumFold COMMAND testSpectrumFold)
 add_test(NAME testIqData COMMAND testIqData)
 add_test(NAME testAmbiguity COMMAND testAmbiguity)
 add_test(NAME testClutterFft COMMAND testClutterFft)
