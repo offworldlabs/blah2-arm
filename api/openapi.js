@@ -19,7 +19,7 @@ const TAGS = [
     segment: 'api',
     name: 'api',
     description: 'Latest radar output relayed from blah2 over TCP (map, detections, '
-      + 'tracks, timestamp, timing, IQ metadata), the ADS-B truth flag, and ADS-B '
+      + 'timestamp, timing, IQ metadata), the ADS-B truth flag, and ADS-B '
       + 'aircraft projected into bistatic delay-Doppler.',
   },
   {
