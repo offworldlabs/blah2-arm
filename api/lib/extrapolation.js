@@ -7,10 +7,25 @@ const { calculateBistaticDelay, calculateBistaticDoppler } = require('./geometry
 const FT_TO_M = 0.3048;
 const FTMIN_TO_FTPS = 1 / 60; // ft/min to ft/s
 
+// How far a position may be projected, in seconds, before it is refused.
+//
+// This is a confidence cutoff on a constant-velocity model, not a property of
+// the data. It was 5 s, chosen when every source refreshed positions about
+// once a second. ADSBHub-fed sources do not: adsb.retina.fm refreshes in whole
+// batches every 8.6 s, so each aircraft's age sweeps a 1-9 s sawtooth and a 5 s
+// cutoff rejected the entire population on roughly 7 polls in 10. 10 s covers
+// the whole sweep.
+//
+// The cost is the error a straight-line projection accumulates over the extra
+// seconds. For an airliner in cruise that is small, since it is flying very
+// nearly straight; it grows only while an aircraft is manoeuvring, and a
+// standard-rate turn held for the full 10 s is the worst case.
+const MAX_EXTRAPOLATION_S = 10.0;
+
 function extrapolatePosition(aircraft, targetTimestamp) {
   const dt = targetTimestamp - (aircraft.timestamp || 0);
 
-  if (Math.abs(dt) > 5.0 || !aircraft.gs || aircraft.track === null || aircraft.track === undefined) {
+  if (Math.abs(dt) > MAX_EXTRAPOLATION_S || !aircraft.gs || aircraft.track === null || aircraft.track === undefined) {
     return null;
   }
 
@@ -104,6 +119,7 @@ function extrapolateAdsbData(adsbData, detectionTimestamp, rxPos, txPos, frequen
 }
 
 module.exports = {
+  MAX_EXTRAPOLATION_S,
   extrapolatePosition,
   extrapolateAdsbData
 };

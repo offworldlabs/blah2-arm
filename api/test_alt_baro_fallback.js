@@ -80,5 +80,48 @@ check('a full adsb-service aircraft produces usable truth', () => {
   assert.ok(ac.delay > 0, `expected a usable delay, got ${ac.delay}`);
 });
 
+
+// ---------------------------------------------------------------------------
+// Extrapolation window
+// ---------------------------------------------------------------------------
+
+const { MAX_EXTRAPOLATION_S, extrapolatePosition } = require('./lib/extrapolation');
+
+console.log('\nExtrapolation window');
+
+check('the window covers adsb-service\'s 1-9 s batch sawtooth', () => {
+  assert.ok(MAX_EXTRAPOLATION_S >= 9.0, `window is ${MAX_EXTRAPOLATION_S}s, batches reach 9s`);
+  const now = Date.now() / 1000;
+  const ac = { lat: 42.4, lon: -72.9, alt_baro: 24000, gs: 400, track: 90, timestamp: now - 8 };
+  assert.ok(extrapolatePosition(ac, now) !== null, 'an 8 s old position must project');
+});
+
+check('a position past the window is still refused', () => {
+  const now = Date.now() / 1000;
+  const ac = { lat: 42.4, lon: -72.9, alt_baro: 24000, gs: 400, track: 90, timestamp: now - 11 };
+  assert.strictEqual(extrapolatePosition(ac, now), null, 'an 11 s old position must be refused');
+});
+
+check('the worst-case cost of the wider window is bounded', () => {
+  // A straight-line projection is wrong only while the aircraft manoeuvres.
+  // Worst realistic case: a standard-rate turn (3 deg/s) held for the whole
+  // window. Compare where we say it is against where it actually would be.
+  const v = 200;                        // m/s, ~390 kt
+  const omega = 3 * Math.PI / 180;      // standard rate, rad/s
+  const r = v / omega;
+
+  function errorAfter(t) {
+    const straight = { x: 0, y: v * t };                       // our projection
+    const turned = { x: r * (1 - Math.cos(omega * t)),         // the truth
+                     y: r * Math.sin(omega * t) };
+    return Math.hypot(straight.x - turned.x, straight.y - turned.y);
+  }
+
+  const at5 = errorAfter(5);
+  const at10 = errorAfter(10);
+  console.log(`        worst-case turn error: ${at5.toFixed(0)} m at 5 s, ${at10.toFixed(0)} m at 10 s`);
+  assert.ok(at10 < 1000, `10 s worst case is ${at10.toFixed(0)} m, expected under 1 km`);
+});
+
 console.log(failures === 0 ? '\nAll checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
