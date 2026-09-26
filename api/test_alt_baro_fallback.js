@@ -123,5 +123,47 @@ check('the worst-case cost of the wider window is bounded', () => {
   assert.ok(at10 < 1000, `10 s worst case is ${at10.toFixed(0)} m, expected under 1 km`);
 });
 
+// ---------------------------------------------------------------------------
+// Vertical rate
+// ---------------------------------------------------------------------------
+
+const { verticalRate } = require('./lib/extrapolation');
+
+console.log('\nVertical rate');
+
+check('geometric vertical rate is preferred when present', () => {
+  assert.strictEqual(verticalRate({ geom_rate: 1800, baro_rate: 1700 }), 1800);
+});
+
+check('barometric vertical rate is used when geometric is missing', () => {
+  // Neither feed delivers geom_rate to this code, so this is the live path.
+  assert.strictEqual(verticalRate({ baro_rate: -1200 }), -1200);
+});
+
+check('a descent is not mistaken for level flight', () => {
+  // The bug this closes: vel_up was always 0, so a descending aircraft got the
+  // Doppler of a level one. A descent must move the projected altitude down.
+  const now = Date.now() / 1000;
+  const descending = { lat: 42.4, lon: -72.9, alt_baro: 24000, baro_rate: -2000, gs: 400, track: 90, timestamp: now - 8 };
+  const level = { ...descending, baro_rate: 0 };
+  const a = extrapolatePosition(descending, now);
+  const b = extrapolatePosition(level, now);
+  assert.ok(a.alt < b.alt, `descending aircraft must project lower: ${a.alt} vs ${b.alt}`);
+  // 2000 ft/min for 8 s is 267 ft.
+  assert.ok(Math.abs((b.alt - a.alt) - 266.7) < 1, `expected ~267 ft of descent, got ${(b.alt - a.alt).toFixed(1)}`);
+});
+
+check('no vertical rate at all is treated as level', () => {
+  assert.strictEqual(verticalRate({}), 0);
+  assert.strictEqual(verticalRate({ baro_rate: null }), 0);
+});
+
+check('a climbing aircraft gets a different doppler from a level one', () => {
+  const climbing = truthFor({ alt_baro: 24000, baro_rate: 2500 });
+  const level = truthFor({ alt_baro: 24000, baro_rate: 0 });
+  assert.notStrictEqual(climbing.doppler, level.doppler,
+    'vertical motion must reach the doppler calculation');
+});
+
 console.log(failures === 0 ? '\nAll checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

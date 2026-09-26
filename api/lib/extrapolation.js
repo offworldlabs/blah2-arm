@@ -22,6 +22,25 @@ const FTMIN_TO_FTPS = 1 / 60; // ft/min to ft/s
 // standard-rate turn held for the full 10 s is the worst case.
 const MAX_EXTRAPOLATION_S = 10.0;
 
+// Vertical rate in ft/min.
+//
+// geom_rate is GNSS-derived and preferred, but it reaches this code from
+// neither source: ADSBHub's SBS feed has no such field, and the tar1090 proxy's
+// converter does not pass adsb.lol's through. baro_rate is the pressure-derived
+// equivalent, it is carried by both feeds and the converter does pass it, and
+// the two differ by a few percent - far less than the ~750 ft gap between the
+// two altitudes. Reading only geom_rate meant vel_up was always 0, so a
+// climbing or descending aircraft got the Doppler of a level one.
+function verticalRate(aircraft) {
+  if (typeof aircraft.geom_rate === 'number') {
+    return aircraft.geom_rate;
+  }
+  if (typeof aircraft.baro_rate === 'number') {
+    return aircraft.baro_rate;
+  }
+  return 0;
+}
+
 function extrapolatePosition(aircraft, targetTimestamp) {
   const dt = targetTimestamp - (aircraft.timestamp || 0);
 
@@ -34,8 +53,8 @@ function extrapolatePosition(aircraft, targetTimestamp) {
 
   const dx = velocityMs * Math.sin(trackRad) * dt;
   const dy = velocityMs * Math.cos(trackRad) * dt;
-  // geom_rate is in ft/min; keep altitude in feet to match alt_geom units
-  const dz = (aircraft.geom_rate || 0) * FTMIN_TO_FTPS * dt;
+  // vertical rate is in ft/min; keep altitude in feet to match alt_geom units
+  const dz = verticalRate(aircraft) * FTMIN_TO_FTPS * dt;
 
   const latRad = aircraft.lat * Math.PI / 180;
   const newLat = aircraft.lat + (dy / 111320);
@@ -94,7 +113,7 @@ function extrapolateAdsbData(adsbData, detectionTimestamp, rxPos, txPos, frequen
           const velocity = {
             gs: aircraft.gs || 0,
             track: aircraft.track || 0,
-            geom_rate: aircraft.geom_rate || 0
+            geom_rate: verticalRate(aircraft)
           };
           syncAircraft.doppler = calculateBistaticDoppler(
             extrapolatedPos, velocity, rxPos, txPos, frequency
@@ -120,6 +139,7 @@ function extrapolateAdsbData(adsbData, detectionTimestamp, rxPos, txPos, frequen
 
 module.exports = {
   MAX_EXTRAPOLATION_S,
+  verticalRate,
   extrapolatePosition,
   extrapolateAdsbData
 };
