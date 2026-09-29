@@ -679,10 +679,26 @@ void RspDuo::set_device_parameters()
     deviceParams->rxChannelB->ctrlParams.agc.setPoint_dBfs = agc_setpoint_dbfs_nr;
   }
 
-  // set gain reduction and lna sate
-  deviceParams->rxChannelA->tunerParams.gain.gRdB = gain_reduction_nr_a;
+  // Stage gain reduction and LNA state for the start of streaming.
+  //
+  // Both tuners start at the less sensitive of the two configured gain
+  // reductions, not at their own values. sdrplay_api_Init() starts streaming
+  // with rxChannelB overwritten by rxChannelA's values (see the re-stage in
+  // process()), so whatever is staged on A here is what tuner B runs at
+  // until process() pushes B's real value. Staged at A's own value, a
+  // config like A=20 / B=59 starts surveillance ~39 dB more sensitive than
+  // configured, at a gain a calibration run may just have proved overloads
+  // it. A live retune never does this (it changes each tuner separately
+  // while streaming), so a node could run a tuning cleanly and then fail
+  // to come back up on the same tuning after a restart (ClickUp
+  // 123zgec4dua). Starting both at the higher reduction means neither
+  // tuner is ever more sensitive than configured, at any point; A simply
+  // starts a little quieter until process() lowers it. LNA state is shared
+  // by both tuners, so the copy cannot make it worse.
+  int start_gain_reduction_nr = std::max(gain_reduction_nr_a, gain_reduction_nr_b);
+  deviceParams->rxChannelA->tunerParams.gain.gRdB = start_gain_reduction_nr;
   deviceParams->rxChannelA->tunerParams.gain.LNAstate = lna_state_nr;
-  deviceParams->rxChannelB->tunerParams.gain.gRdB = gain_reduction_nr_b;
+  deviceParams->rxChannelB->tunerParams.gain.gRdB = start_gain_reduction_nr;
   deviceParams->rxChannelB->tunerParams.gain.LNAstate = lna_state_nr;
 
   // set decimation and IF frequency and analog bandwidth
