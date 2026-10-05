@@ -22,6 +22,16 @@ const FTMIN_TO_FTPS = 1 / 60; // ft/min to ft/s
 // standard-rate turn held for the full 10 s is the worst case.
 const MAX_EXTRAPOLATION_S = 10.0;
 
+// How old a position the detection matcher will still project, in seconds.
+//
+// Wider than MAX_EXTRAPOLATION_S because the matcher has no better option: it
+// used to compare raw positions, so every second of age became error. adsb.retina.fm
+// positions reach blah2-api 1-15 s old (median ~11 s on jn1, 2026-10-05), and a
+// 10 s cutoff would drop about half of them. At 20 s a cruising airliner's
+// straight-line error is still well inside the 2 km delay tolerance; a turning
+// one may simply fail to match, which is the same outcome as dropping it.
+const MATCH_MAX_POSITION_AGE_S = 20.0;
+
 // Vertical rate in ft/min.
 //
 // geom_rate is GNSS-derived and preferred, but it reaches this code from
@@ -41,10 +51,10 @@ function verticalRate(aircraft) {
   return 0;
 }
 
-function extrapolatePosition(aircraft, targetTimestamp) {
+function extrapolatePosition(aircraft, targetTimestamp, maxSeconds = MAX_EXTRAPOLATION_S) {
   const dt = targetTimestamp - (aircraft.timestamp || 0);
 
-  if (Math.abs(dt) > MAX_EXTRAPOLATION_S || !aircraft.gs || aircraft.track === null || aircraft.track === undefined) {
+  if (Math.abs(dt) > maxSeconds || !aircraft.gs || aircraft.track === null || aircraft.track === undefined) {
     return null;
   }
 
@@ -85,6 +95,98 @@ function extrapolatePosition(aircraft, targetTimestamp) {
     lon: newLon,
     alt: newAlt
   };
+}
+
+/**
+ * An aircraft record moved to where it was at targetTimestamp, for the
+ * detection matcher.
+ *
+ * The matcher compares a detection against each aircraft's expected delay and
+ * Doppler. Comparing the position as reported means comparing against where
+ * the aircraft was seen_pos seconds ago, and near the baseline an airliner's
+ * Doppler changes by ~5 Hz/s, so a few seconds of age alone exceeds the 5 Hz
+ * tolerance (live on jn1, 2026-10-05: an SNR 20 overflight never matched).
+ *
+ * The result keeps every field bistatic.js reads. Altitude goes in alt_geom,
+ * as extrapolatePosition already resolves the alt_baro fallback, and the
+ * vertical rate goes in geom_rate, the only rate field bistatic.js reads, so
+ * a climbing aircraft gets the Doppler of a climbing one.
+ *
+ * @param {object} aircraft Record carrying `timestamp`: position time, epoch s.
+ * @param {number} targetTimestamp Detection time, epoch s.
+ * @returns {object|null} The moved record with `position_age` (s), or null
+ *   when the position is too old or the record lacks speed or heading.
+ */
+function projectForMatch(aircraft, targetTimestamp) {
+  const pos = extrapolatePosition(aircraft, targetTimestamp, MATCH_MAX_POSITION_AGE_S);
+  if (!pos) {
+    return null;
+  }
+  return {
+    ...aircraft,
+    lat: pos.lat,
+    lon: pos.lon,
+    alt_geom: pos.alt,
+    geom_rate: verticalRate(aircraft),
+    position_age: targetTimestamp - aircraft.timestamp
+  };
+}
+
+/**
+ * The aircraft the detection matcher should compare a frame against.
+ *
+ * Each record is projected to the detection's time, and dropped if it cannot
+ * be (too old, or no speed or heading, without which bistatic.js cannot give
+ * a Doppler and it could never have matched). With no detection time, or a
+ * record carrying no position time, the record is used as reported: the age
+ * is unknown, so there is nothing to correct by.
+ *
+ * Done once per frame, not per detection, since it does not depend on the
+ * detection.
+ *
+ * @param {object[]} aircraft Records from stampPositionTimes().
+ * @param {number|undefined} detectionTimestamp Detection time, epoch s.
+ * @returns {object[]}
+ */
+function aircraftAtTimestamp(aircraft, detectionTimestamp) {
+  if (typeof detectionTimestamp !== 'number' || !isFinite(detectionTimestamp)) {
+    return aircraft;
+  }
+  const result = [];
+  for (const ac of aircraft) {
+    if (typeof ac.timestamp !== 'number') {
+      result.push(ac);
+      continue;
+    }
+    const projected = projectForMatch(ac, detectionTimestamp);
+    if (projected) {
+      result.push(projected);
+    }
+  }
+  return result;
+}
+
+/**
+ * Give each aircraft in a tar1090 aircraft.json payload its position time,
+ * `timestamp`, in epoch seconds.
+ *
+ * seen_pos is measured from the payload's own `now`, which the tar1090 proxy
+ * sets to when it fetched the data, not when it served it. A cached payload
+ * served 10 s later still says `now` = fetch time. Measuring seen_pos from
+ * our own clock instead would make every cached position look that much
+ * younger than it is. The local clock is the fallback for a payload with no
+ * `now`.
+ *
+ * @param {object} payload Parsed aircraft.json.
+ * @param {number} receivedAt Local time the payload arrived, epoch s.
+ * @returns {object[]} Copies of payload.aircraft with `timestamp` set.
+ */
+function stampPositionTimes(payload, receivedAt) {
+  const now = typeof payload.now === 'number' ? payload.now : receivedAt;
+  return (payload.aircraft || []).map((ac) => ({
+    ...ac,
+    timestamp: now - (ac.seen_pos || 0)
+  }));
 }
 
 function extrapolateAdsbData(adsbData, detectionTimestamp, rxPos, txPos, frequency) {
@@ -139,7 +241,11 @@ function extrapolateAdsbData(adsbData, detectionTimestamp, rxPos, txPos, frequen
 
 module.exports = {
   MAX_EXTRAPOLATION_S,
+  MATCH_MAX_POSITION_AGE_S,
   verticalRate,
   extrapolatePosition,
+  projectForMatch,
+  aircraftAtTimestamp,
+  stampPositionTimes,
   extrapolateAdsbData
 };
