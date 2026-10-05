@@ -5,7 +5,7 @@ const yaml = require('js-yaml');
 const dns = require('dns');
 const http = require('http');
 const bistatic = require('./bistatic.js');
-const { extrapolateAdsbData } = require('./lib/extrapolation');
+const { extrapolateAdsbData, aircraftAtTimestamp, stampPositionTimes } = require('./lib/extrapolation');
 const retuneLib = require('./lib/retune');
 
 // parse config file
@@ -339,7 +339,10 @@ const server_detection = net.createServer((socket)=>{
         try {
           const det = JSON.parse(data_detection);
           if (adsbTruthAvailable()) {
-            const aircraft = await getCachedAircraft();
+            // Compared where each aircraft was at the detection's time, not
+            // where it was last reported; see aircraftAtTimestamp().
+            const aircraft = aircraftAtTimestamp(await getCachedAircraft(),
+              typeof det.timestamp === 'number' ? det.timestamp / 1000 : undefined);
             det.adsb = det.delay.map((delay, idx) => {
               const doppler = det.doppler[idx];
               let bestMatch = null;
@@ -369,7 +372,9 @@ const server_detection = net.createServer((socket)=>{
                       expected_delay: Math.round(expected_delay * 100) / 100,
                       expected_doppler: Math.round(expected_doppler * 100) / 100,
                       delay_residual: Math.round((delay - expected_delay) * 100) / 100,
-                      doppler_residual: Math.round((doppler - expected_doppler) * 100) / 100
+                      doppler_residual: Math.round((doppler - expected_doppler) * 100) / 100,
+                      position_age: ac.position_age === undefined
+                        ? undefined : Math.round(ac.position_age * 10) / 10
                     };
                   }
                 }
@@ -457,7 +462,7 @@ async function fetchADSB() {
       resp.on('end', () => {
         try {
           const json = JSON.parse(data);
-          resolve(json.aircraft || []);
+          resolve(stampPositionTimes(json, Date.now() / 1000));
         } catch (e) {
           console.error('Error parsing tar1090 response:', e.message);
           resolve([]);
@@ -625,7 +630,7 @@ async function fetchFromTar1090AndExtrapolate(clientDetectionTs) {
   for (const ac of aircraft) {
     if (!ac.hex) continue;
 
-    const timestamp = Date.now() / 1000 - (ac.seen_pos || 0);
+    const timestamp = ac.timestamp;
 
     adsbData[ac.hex] = {
       hex: ac.hex,
