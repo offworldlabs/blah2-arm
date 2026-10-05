@@ -12,7 +12,7 @@ Here is a list of available config parameters:
 
 - **lnaState** has a default value of 4, must be between 1 and 9. A larger number means a larger gain reduction (attenuation). Maximum gain at LNA state 1 and minimum gain at LNA state 9.
 
-- **dabNotch** is a bool, true turns on the DAB band notch filter (default false).
+- **dabNotch** is a bool, true turns on the DAB band notch filter (155-235 MHz). Required, there is no default.
 
-- **rfNotch** is a bool, true turns on the AM/FM band notch filter (default false).
+- **rfNotch** is a bool, true turns on the AM/FM band notch filter (77-115 MHz). Required, there is no default.
 
