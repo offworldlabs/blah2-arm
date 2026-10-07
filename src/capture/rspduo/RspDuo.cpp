@@ -14,8 +14,10 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <thread>
 
 // class static constants
 const double RspDuo::MAX_FREQUENCY_NR = 2000000000;
@@ -33,9 +35,14 @@ sdrplay_api_DeviceParamsT *deviceParams = NULL;
 sdrplay_api_ErrT err;
 sdrplay_api_CallbackFnsT cbFns;
 sdrplay_api_RxChannelParamsT *chParams;
-// serialises sdrplay_api_Update() calls: the SDRplay event-callback thread
-// (overload acks) and the retune-poll thread both call it on the same device
+// serialises sdrplay_api_Update() calls from blah2's own threads: process()
+// (start-up re-stage and overload acks) and the retune-poll thread (retune()).
+// Never taken inside an SDRplay callback - see event_callback().
 std::mutex sdrplay_update_mutex;
+// Tuners with an overload event still to acknowledge, as a bitmask of
+// sdrplay_api_TunerSelectT (A=1, B=2). Set by event_callback(), cleared and
+// acked by send_overload_acks().
+std::atomic<int> overload_ack_pending_fg{0};
 // true once initialise_device() has run and the device accepts live updates
 std::atomic<bool> device_ready_fg{false};
 // per-tuner RF overload state from sdrplay_api_PowerOverloadChange events
@@ -50,7 +57,9 @@ std::atomic<bool> overload_b_fg{false};
 // that window reading false. Counters are incremented here, in the driver's
 // own event callback, rather than derived by watching the flags change --
 // anything that samples can miss an event, including the 250ms capture-status
-// loop that publishes them.
+// loop that publishes them. They count transitions into overload, not
+// Overload_Detected events: the ack is deferred (see event_callback()), and
+// the API repeats an unacknowledged event about every 125 ms.
 std::atomic<unsigned long> overload_count_a_fg{0};
 std::atomic<unsigned long> overload_count_b_fg{0};
 
@@ -175,6 +184,11 @@ void RspDuo::process(IqData *_buffer1, IqData *_buffer2)
     // back as channel A's value after Init() (bwType, ifType, decimation,
     // notches and the AGC fields below), so anything that needs to differ
     // per tuner has to be re-staged here and pushed with an Update.
+    //
+    // A node that overloads at start-up reports it ~25 ms after Init()
+    // returns, while this block is mid-way through its ~1 s of Updates. That
+    // overload is acked by the control loop below once the block finishes,
+    // never from the event callback (see event_callback()).
     deviceParams->rxChannelA->tunerParams.gain.gRdB = gain_reduction_nr_a;
     deviceParams->rxChannelA->tunerParams.gain.LNAstate = lna_state_nr;
     deviceParams->rxChannelB->tunerParams.gain.gRdB = gain_reduction_nr_b;
@@ -229,17 +243,54 @@ void RspDuo::process(IqData *_buffer1, IqData *_buffer2)
 
   device_ready_fg.store(true);
 
-  // control loop
+  // control loop: acks overloads every tick, prints stats once a second
+  const int TICK_MS = 50;
+  int tick = 0;
   while (run_fg)
   {
-    if (stats_fg)
+    send_overload_acks();
+    if (stats_fg && tick % (1000 / TICK_MS) == 0)
     {
       std::cerr << "[RspDuo]" << " max_a_nr: " << max_a_nr << 
         " max_b_nr: " << max_b_nr << std::endl;
       max_a_nr = 0;
       max_b_nr = 0;
     }
-    sleep(1);
+    tick++;
+    std::this_thread::sleep_for(std::chrono::milliseconds(TICK_MS));
+  }
+}
+
+void RspDuo::send_overload_acks()
+{
+  if (!device_ready_fg.load())
+  {
+    return;
+  }
+  int pending = overload_ack_pending_fg.exchange(0);
+  if (pending == 0)
+  {
+    return;
+  }
+
+  // Waits out any retune() in progress, so an ack never overlaps another
+  // Update. A failed ack is not re-queued: the API repeats an unacknowledged
+  // event, which sets the flag again.
+  std::lock_guard<std::mutex> lock(sdrplay_update_mutex);
+  for (sdrplay_api_TunerSelectT tuner : {sdrplay_api_Tuner_A, sdrplay_api_Tuner_B})
+  {
+    if (!(pending & tuner))
+    {
+      continue;
+    }
+    sdrplay_api_ErrT ackErr = sdrplay_api_Update(chosenDevice->dev, tuner,
+      sdrplay_api_Update_Ctrl_OverloadMsgAck, sdrplay_api_Update_Ext1_None);
+    if (ackErr != sdrplay_api_Success)
+    {
+      std::cerr << "[RspDuo] Overload ack failed, tuner=" <<
+        (tuner == sdrplay_api_Tuner_A ? "sdrplay_api_Tuner_A" : "sdrplay_api_Tuner_B") <<
+        ": " << sdrplay_api_GetErrorString(ackErr) << std::endl;
+    }
   }
 }
 
@@ -870,30 +921,47 @@ void *cbContext)
 
   case sdrplay_api_PowerOverloadChange:
   {
+    // Record the event and return. Never call sdrplay_api_Update() or wait
+    // on a lock here: the ack is sent by send_overload_acks() from the
+    // control loop in process().
+    //
+    // Acking from this callback deadlocks the API whenever another thread
+    // has an Update in flight, which is exactly when overloads arrive (the
+    // re-stage straight after Init(), and retune() jumping onto a strong
+    // signal). The API serialises Updates, so the ack queues behind the
+    // in-flight one, and that one cannot complete while this callback is
+    // stuck: streaming stops and every Update fails after 5 s with
+    // ServiceNotResponding. Waiting on sdrplay_update_mutex first, or calling
+    // Update with no lock at all, both wedged every run on owl. A late ack is
+    // harmless: Updates still succeed meanwhile, and the API repeats the event
+    // about every 125 ms until it is acked, so repeats are logged and counted
+    // only as changes.
     bool detected = (params->powerOverloadParams.powerOverloadChangeType
       == sdrplay_api_Overload_Detected);
-    std::cerr << "[RspDuo] PowerOverloadChange, tuner=" << tuner_str << " ";
-    std::cerr << "powerOverloadChangeType=" <<
-      (detected ? "sdrplay_api_Overload_Detected" :
-      "sdrplay_api_Overload_Corrected") << std::endl;
-    if (tuner == sdrplay_api_Tuner_A)
+    bool changed = false;
+    // Count onsets only: a correction is the recovery from an onset already
+    // counted, so counting both would double every episode. An event for
+    // sdrplay_api_Tuner_Both (seen on Uninit) applies to each tuner.
+    if (tuner & sdrplay_api_Tuner_A)
     {
-      // Count onsets only: a correction is the recovery from an onset
-      // already counted, so counting both would double every episode.
-      if (detected) overload_count_a_fg.fetch_add(1);
-      overload_a_fg.store(detected);
+      bool was = overload_a_fg.exchange(detected);
+      if (detected && !was) overload_count_a_fg.fetch_add(1);
+      changed = changed || (was != detected);
     }
-    else
+    if (tuner & sdrplay_api_Tuner_B)
     {
-      if (detected) overload_count_b_fg.fetch_add(1);
-      overload_b_fg.store(detected);
+      bool was = overload_b_fg.exchange(detected);
+      if (detected && !was) overload_count_b_fg.fetch_add(1);
+      changed = changed || (was != detected);
     }
-    // send update message to acknowledge power overload message received
+    if (changed)
     {
-      std::lock_guard<std::mutex> lock(sdrplay_update_mutex);
-      sdrplay_api_Update(chosenDevice->dev, tuner,
-        sdrplay_api_Update_Ctrl_OverloadMsgAck, sdrplay_api_Update_Ext1_None);
+      std::cerr << "[RspDuo] PowerOverloadChange, tuner=" << tuner_str << " ";
+      std::cerr << "powerOverloadChangeType=" <<
+        (detected ? "sdrplay_api_Overload_Detected" :
+        "sdrplay_api_Overload_Corrected") << std::endl;
     }
+    overload_ack_pending_fg.fetch_or(tuner & sdrplay_api_Tuner_Both);
     break;
   }
 
