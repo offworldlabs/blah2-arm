@@ -164,6 +164,12 @@ private:
   /// @brief Stop running capture callback function.
   /// @return Void.
   void uninitialise_device();
+  /// @brief Acknowledge the overload events event_callback() has recorded.
+  /// @details Called from process()'s control loop, never from an SDRplay
+  /// callback: acking inside the callback deadlocks the API while another
+  /// Update is in flight (see event_callback()).
+  /// @return Void.
+  void send_overload_acks();
 
 public:
   /// @brief Constructor.
