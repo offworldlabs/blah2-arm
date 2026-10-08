@@ -54,9 +54,23 @@ sudo docker logs blah2-api
 ```
 
 ### SDRplay Restart (if needed)
+Stop blah2 first, so no client holds the device while the service restarts:
 ```bash
-sudo ./sdrplay-restart.sh
+sudo docker stop blah2
+sudo systemctl restart sdrplay.service
+sleep 30
+sudo docker start blah2
 ```
+`sdrplay_apiService` ignores SIGTERM, so if the restart hangs, kill it by its full
+command line (`pkill -x` cannot match: the process name is truncated to 15
+characters), then start the unit again:
+```bash
+sudo pkill -9 -f '[s]drplay_apiService'
+sudo systemctl reset-failed sdrplay.service
+sudo systemctl start sdrplay.service
+```
+`sdrplay-restart.sh` does not restart anything: it runs before blah2 in the container
+and only pauses.
 
 ### Configuration
 - Main config: `config/config.yml`
