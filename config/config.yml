@@ -2,6 +2,7 @@
 # Note: Config merging (default/user/forced) is handled by retina-node at deployment time. 
 # Ensure new defaults for deployment are added in there.
 # This file contains defaults for standalone/development use.
+# What each process setting does: config/README.md.
 
 capture:
   fs: 2000000
@@ -29,6 +30,7 @@ process:
     delayMax: 400
     dopplerMin: -1000
     dopplerMax: 1000
+    dopplerWindow: none
   clutter:
     enable: true
     delayMin: -10
@@ -39,7 +41,9 @@ process:
     nGuard: 2
     nTrain: 6
     minDelay: 5
+    maxDelay: 400
     minDoppler: 15
+    maxDoppler: 1000
     nCentroid: 6
 
 network:
