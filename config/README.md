@@ -92,9 +92,10 @@ limit is inclusive. The map itself is unchanged, and training cells are not
 affected.
 
 `minDoppler` keeps clutter near zero Doppler out of the detections. It also hides
-every slow target. At 503 MHz, 15 Hz is a bistatic range rate of 8.9 m/s, so a
-target slower than about 4.5 m/s can never be detected in any direction. 5 Hz lowers
-that to 1.8 m/s.
+every slow target. Doppler rows sit on whole 2 Hz bins, so 15 leaves 16 Hz as the
+slowest row tested. At 503 MHz that is a bistatic range rate of 9.5 m/s, so a
+target slower than 4.8 m/s can never be detected in any direction. 5 leaves 6 Hz,
+which lowers that to 1.8 m/s.
 
 The direct signal and still clutter sit at exactly 0 Hz, and the clutter filter
 cancels them. What the guard really protects against is clutter that is not
