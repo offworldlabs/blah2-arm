@@ -8,16 +8,15 @@
 
 // constructor
 CfarDetector1D::CfarDetector1D(double _pfa, int32_t _nGuard, int32_t _nTrain,
-  int32_t _minDelay, int32_t _maxDelay, double _minDoppler, double _maxDoppler)
+  int32_t _minDelay, double _minDoppler, double _maxReportedDoppler)
 {
   // input
   pfa = _pfa;
   nGuard = _nGuard;
   nTrain = _nTrain;
   minDelay = _minDelay;
-  maxDelay = _maxDelay;
   minDoppler = _minDoppler;
-  maxDoppler = _maxDoppler;
+  maxReportedDoppler = _maxReportedDoppler;
 }
 
 CfarDetector1D::~CfarDetector1D()
@@ -71,7 +70,7 @@ std::unique_ptr<Detection> CfarDetector1D::process(Map<std::complex<double>> *x)
   for (int i = 0; i < nDopplerBins; i++)
   { 
     // skip if outside the Doppler limits
-    if (std::abs(x->doppler[i]) < minDoppler || std::abs(x->doppler[i]) > maxDoppler)
+    if (std::abs(x->doppler[i]) < minDoppler || std::abs(x->doppler[i]) > maxReportedDoppler)
     {
       continue;
     }
@@ -84,8 +83,8 @@ std::unique_ptr<Detection> CfarDetector1D::process(Map<std::complex<double>> *x)
     }
     for (int j = 0; j < nDelayBins; j++)
     {
-      // skip if outside the delay limits
-      if (x->delay[j] < minDelay || x->delay[j] > maxDelay)
+      // skip if less than min delay
+      if (x->delay[j] < minDelay)
       {
         continue;
       }

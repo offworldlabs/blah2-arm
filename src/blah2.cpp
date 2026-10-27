@@ -75,14 +75,10 @@ int main(int argc, char **argv)
   tree["process"]["detection"]["minDelay"] >> detectionConfig.minDelay;
   tree["process"]["detection"]["minDoppler"] >> detectionConfig.minDoppler;
   tree["process"]["detection"]["nCentroid"] >> detectionConfig.nCentroid;
-  // Optional, so configs written before these keys existed still load.
-  if (tree["process"]["detection"].has_child("maxDelay"))
+  // Optional, so configs written before the key existed still load.
+  if (tree["process"]["detection"].has_child("maxReportedDoppler"))
   {
-    tree["process"]["detection"]["maxDelay"] >> detectionConfig.maxDelay;
-  }
-  if (tree["process"]["detection"].has_child("maxDoppler"))
-  {
-    tree["process"]["detection"]["maxDoppler"] >> detectionConfig.maxDoppler;
+    tree["process"]["detection"]["maxReportedDoppler"] >> detectionConfig.maxReportedDoppler;
   }
   // Optional; absent means no window, which is the map blah2 always produced.
   Ambiguity::DopplerWindow dopplerWindow = Ambiguity::DopplerWindow::None;
@@ -214,8 +210,8 @@ int main(int argc, char **argv)
   // setup process detection
   CfarDetector1D *cfarDetector1D = new CfarDetector1D(detectionConfig.pfa,
     detectionConfig.nGuard, detectionConfig.nTrain,
-    detectionConfig.minDelay, detectionConfig.maxDelay,
-    detectionConfig.minDoppler, detectionConfig.maxDoppler);
+    detectionConfig.minDelay, detectionConfig.minDoppler,
+    detectionConfig.maxReportedDoppler);
   Interpolate *interpolate = new Interpolate(true, true);
 
   // setup process centroid

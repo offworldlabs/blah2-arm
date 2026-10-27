@@ -41,14 +41,13 @@ opens the SDR, with a log line such as `Error: process.detection: nTrain must be
 | `pfa` | 0.00001 | greater than 0, less than 1 | probability per cell |
 | `nGuard` | 2 | 0 or more | delay bins, each side |
 | `nTrain` | 6 | 1 or more | delay bins, each side |
-| `minDelay` | 5 | at most `maxDelay` | delay bins |
-| `maxDelay` | no limit | at least `minDelay` | delay bins |
+| `minDelay` | 5 | any whole number | delay bins |
 | `minDoppler` | 15 | 0 or more | Hz, absolute |
-| `maxDoppler` | no limit | at least `minDoppler` | Hz, absolute |
+| `maxReportedDoppler` | no limit | at least `minDoppler` | Hz, absolute |
 | `nCentroid` | 6 | 0 to 65535 | bins, each side |
 
-`maxDelay` and `maxDoppler` are optional. Leaving them out tests every cell,
-which is how blah2 behaved before they existed.
+`maxReportedDoppler` is optional. Leaving it out tests every Doppler row, which
+is how blah2 behaved before it existed.
 
 ### `pfa`
 
@@ -86,11 +85,11 @@ raising its threshold.
 **Expect:** raising `nTrain` gives slightly more detections far out and slightly
 fewer at the nearest delays.
 
-### `minDoppler` and `maxDoppler`
+### `minDoppler`
 
-Doppler rows with an absolute Doppler below `minDoppler` or above `maxDoppler`
-are not tested. The limits are inclusive. The map itself is unchanged, and
-training cells are not affected.
+Doppler rows with an absolute Doppler below `minDoppler` are not tested. The
+limit is inclusive. The map itself is unchanged, and training cells are not
+affected.
 
 `minDoppler` keeps clutter near zero Doppler out of the detections. It also hides
 every slow target. At 503 MHz, 15 Hz is a bistatic range rate of 8.9 m/s, so a
@@ -107,14 +106,35 @@ If those rows fill with detections while the rest of the map does not change,
 the site has moving clutter at those Doppler values, and that is the floor for
 this site.
 
-`maxDoppler` limits detections to slower targets without narrowing the
-processing. Use it in preference to narrowing `ambiguity.dopplerMin/Max`, which
-folds fast targets into the remaining span as ghosts.
+### `maxReportedDoppler`
 
-### `minDelay` and `maxDelay`
+Doppler rows with an absolute Doppler above `maxReportedDoppler` are not tested,
+so nothing faster is reported. The limit is inclusive. Like `minDoppler`, it
+leaves the map and the training cells unchanged.
 
-Delay columns below `minDelay` or above `maxDelay` are not tested. The limits are
-inclusive.
+It is not the same as `ambiguity.dopplerMax`, even though both default to 1000.
+`dopplerMax` sets how wide blah2 looks; `maxReportedDoppler` sets which part of
+that it reports. To report only slow targets, lower `maxReportedDoppler` and
+leave `dopplerMax` wide. Lowering `dopplerMax` instead folds faster targets back
+into the band as ghosts, like a wagon wheel filmed at too low a frame rate.
+
+Measured by running blah2's own processing on a synthetic capture with an
+aircraft at 250 Hz and drones at 40 Hz and 130 Hz, four noise realisations each:
+
+| | `dopplerMin/Max` ±150 | ±1000 with `maxReportedDoppler` 150 |
+| --- | --- | --- |
+| Aircraft reported as a ghost at -52 Hz | 4 of 4 | 0 of 4 |
+| Drone at 40 Hz detected | 3 of 4 | 4 of 4 |
+| Drone at 130 Hz detected | 1 of 4, 1.8 to 4.8 dB weaker | 2 of 4 |
+
+**Expect:** lowering it removes detections above the limit and changes nothing
+below it.
+
+### `minDelay`
+
+Delay columns below `minDelay` are not tested. The limit is inclusive. There is
+no detection-only upper delay limit: lower `ambiguity.delayMax` instead, which
+folds nothing back in.
 
 `minDelay` 5 excludes everything under 750 m of bistatic range, where the
 direct-path skirt raises the noise floor. It also hides targets close to the
@@ -146,7 +166,7 @@ that sits near a strong one.
 
 `delayMin` and `delayMax` set the delay extent of the map, which is also the
 extent the detector can test. The map is built by the batches algorithm, which
-loses (nCorr - delay) / nCorr of a target's power, where nCorr is 999 at ±1000 Hz.
+keeps only (nCorr - delay) / nCorr of a target's power, where nCorr is 999 at ±1000 Hz.
 Keep `delayMax` well under nCorr. Lowering `delayMax` reduces the cells tested,
 and with them the false alarms, but anything further away is not processed at
 all. Keep `delayMin` at -10: the training cells at the nearest delays use the
@@ -158,6 +178,7 @@ true strength. At ±150 Hz, an aircraft at 250 Hz appears at -52 Hz, 14 dB down.
 Inside the span, a target near the edge loses up to 3.9 dB. A wide span costs
 slow targets almost nothing: 0.03 dB for a target at delay 7 and 30 Hz. On a
 RETINA node the span is fleet policy and a `user.yml` override is dropped.
+To report only slower targets, use `detection.maxReportedDoppler` instead.
 
 `dopplerWindow` tapers the batches before the Doppler FFT. Without it, a strong
 target that falls between two Doppler bins leaks into its neighbours. With

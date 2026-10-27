@@ -41,9 +41,8 @@ process:
     nGuard: 2
     nTrain: 6
     minDelay: 5
-    maxDelay: 400
     minDoppler: 15
-    maxDoppler: 1000
+    maxReportedDoppler: 1000
     nCentroid: 6
 
 network:

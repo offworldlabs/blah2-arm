@@ -104,8 +104,7 @@ static void run(uint32_t nRows, uint32_t nCols, double pfa, int nGuard,
     if (j < nCols) map.data[nRows / 2][j] *= targetGain;
   map.set_metrics();
 
-  CfarDetector1D detector(pfa, nGuard, nTrain, minDelay,
-                          std::numeric_limits<int32_t>::max(), minDoppler,
+  CfarDetector1D detector(pfa, nGuard, nTrain, minDelay, minDoppler,
                           std::numeric_limits<double>::infinity());
   std::unique_ptr<Detection> produced = detector.process(&map);
   std::vector<Hit> got = fromDetection(*produced);

@@ -18,11 +18,9 @@ struct DetectionConfig
   int32_t nGuard = 0;
   int32_t nTrain = 0;
   int32_t minDelay = 0;
-  /// @brief Optional in config. The default tests every delay bin.
-  int32_t maxDelay = std::numeric_limits<int32_t>::max();
   double minDoppler = 0.0;
   /// @brief Optional in config. The default tests every Doppler bin.
-  double maxDoppler = std::numeric_limits<double>::infinity();
+  double maxReportedDoppler = std::numeric_limits<double>::infinity();
   int32_t nCentroid = 0;
 };
 
@@ -43,17 +41,13 @@ inline std::string validate_detection_config(const DetectionConfig &c)
   {
     return "nTrain must be 1 or more";
   }
-  if (c.maxDelay < c.minDelay)
-  {
-    return "maxDelay must be at least minDelay";
-  }
   if (!(c.minDoppler >= 0.0))
   {
     return "minDoppler must be 0 or more";
   }
-  if (!(c.maxDoppler >= c.minDoppler))
+  if (!(c.maxReportedDoppler >= c.minDoppler))
   {
-    return "maxDoppler must be at least minDoppler";
+    return "maxReportedDoppler must be at least minDoppler";
   }
   // Centroid takes its window as uint16_t.
   if (c.nCentroid < 0 || c.nCentroid > std::numeric_limits<uint16_t>::max())

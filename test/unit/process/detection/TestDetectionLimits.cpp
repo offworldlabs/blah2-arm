@@ -1,6 +1,6 @@
 /// @file TestDetectionLimits.cpp
-/// @brief Unit test for the detection config checks, the CFAR upper limits
-/// and Centroid at near range.
+/// @brief Unit test for the detection config checks, the CFAR's
+/// maxReportedDoppler and Centroid at near range.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -77,11 +77,10 @@ TEST_CASE("Config_Shipped_Valid", "[config]")
   CHECK(validate_detection_config(shipped()).empty());
 }
 
-TEST_CASE("Config_Optional_Limits_Default_Open", "[config]")
+TEST_CASE("Config_Optional_Limit_Default_Open", "[config]")
 {
   DetectionConfig c;
-  CHECK(c.maxDelay == std::numeric_limits<int32_t>::max());
-  CHECK(std::isinf(c.maxDoppler));
+  CHECK(std::isinf(c.maxReportedDoppler));
 }
 
 TEST_CASE("Config_Rejects_Bad_Values", "[config]")
@@ -96,11 +95,10 @@ TEST_CASE("Config_Rejects_Bad_Values", "[config]")
   CHECK(bad([](DetectionConfig &c) { c.pfa = std::nan(""); }));
   CHECK(bad([](DetectionConfig &c) { c.nGuard = -1; }));
   CHECK(bad([](DetectionConfig &c) { c.nTrain = 0; }));
-  CHECK(bad([](DetectionConfig &c) { c.maxDelay = 4; }));
   CHECK(bad([](DetectionConfig &c) { c.minDoppler = -1.0; }));
   CHECK(bad([](DetectionConfig &c) { c.minDoppler = std::nan(""); }));
-  CHECK(bad([](DetectionConfig &c) { c.maxDoppler = 10.0; }));
-  CHECK(bad([](DetectionConfig &c) { c.maxDoppler = std::nan(""); }));
+  CHECK(bad([](DetectionConfig &c) { c.maxReportedDoppler = 10.0; }));
+  CHECK(bad([](DetectionConfig &c) { c.maxReportedDoppler = std::nan(""); }));
   CHECK(bad([](DetectionConfig &c) { c.nCentroid = -1; }));
   CHECK(bad([](DetectionConfig &c) { c.nCentroid = 65536; }));
 }
@@ -109,9 +107,8 @@ TEST_CASE("Config_Accepts_Edge_Values", "[config]")
 {
   DetectionConfig c = shipped();
   c.minDelay = 0;
-  c.maxDelay = 0;
   c.minDoppler = 0.0;
-  c.maxDoppler = 0.0;
+  c.maxReportedDoppler = 0.0;
   c.nGuard = 0;
   c.nTrain = 1;
   c.nCentroid = 0;
@@ -119,31 +116,29 @@ TEST_CASE("Config_Accepts_Edge_Values", "[config]")
   // Values that overflowed the old int8_t fields are now plain values.
   c = shipped();
   c.minDelay = 200;
-  c.maxDelay = 400;
   c.nTrain = 200;
   CHECK(validate_detection_config(c).empty());
 }
 
-/// @details Targets inside and outside each limit. The ones outside must go,
-/// and the ones inside must match an unlimited run exactly, because the
-/// limits pick which cells are tested and never what they train on.
-TEST_CASE("Cfar_Upper_Limits", "[cfar]")
+/// @details Targets either side of the limit. The faster ones must go, and
+/// the rest must match an unlimited run exactly, because the limit picks which
+/// cells are tested and never what they train on.
+TEST_CASE("Cfar_Max_Reported_Doppler", "[cfar]")
 {
   std::vector<std::pair<int, double>> targets = {
-    {50, 40.0}, {50, -40.0}, {150, 40.0}, {50, 200.0}, {150, -200.0}};
+    {50, 40.0}, {150, -40.0}, {50, 200.0}, {150, -200.0}};
   Map<Complex> map = noise_map(301, 211, targets);
 
-  CfarDetector1D open(1e-5, 2, 6, 5, std::numeric_limits<int32_t>::max(),
-    15.0, std::numeric_limits<double>::infinity());
+  CfarDetector1D open(1e-5, 2, 6, 5, 15.0,
+    std::numeric_limits<double>::infinity());
   std::unique_ptr<Detection> all = open.process(&map);
   for (const auto &[delay, doppler] : targets)
     REQUIRE(has(*all, delay, doppler));
 
-  CfarDetector1D limited(1e-5, 2, 6, 5, 100, 15.0, 100.0);
+  CfarDetector1D limited(1e-5, 2, 6, 5, 15.0, 100.0);
   std::unique_ptr<Detection> some = limited.process(&map);
   CHECK(has(*some, 50, 40.0));
-  CHECK(has(*some, 50, -40.0));
-  CHECK_FALSE(has(*some, 150, 40.0));
+  CHECK(has(*some, 150, -40.0));
   CHECK_FALSE(has(*some, 50, 200.0));
   CHECK_FALSE(has(*some, 150, -200.0));
 
@@ -151,18 +146,18 @@ TEST_CASE("Cfar_Upper_Limits", "[cfar]")
   size_t inside = 0;
   for (size_t i = 0; i < de.size(); i++)
   {
-    if (de[i] > 100 || std::abs(dp[i]) > 100.0) continue;
+    if (std::abs(dp[i]) > 100.0) continue;
     inside++;
     CHECK(has(*some, de[i], dp[i]));
   }
   CHECK(some->get_nDetections() == inside);
 }
 
-/// @details Limits are inclusive at both ends, like minDelay and minDoppler.
-TEST_CASE("Cfar_Upper_Limits_Inclusive", "[cfar]")
+/// @details The limit is inclusive, like minDoppler.
+TEST_CASE("Cfar_Max_Reported_Doppler_Inclusive", "[cfar]")
 {
   Map<Complex> map = noise_map(301, 211, {{100, 100.0}, {100, -100.0}});
-  CfarDetector1D limited(1e-5, 2, 6, 5, 100, 15.0, 100.0);
+  CfarDetector1D limited(1e-5, 2, 6, 5, 15.0, 100.0);
   std::unique_ptr<Detection> d = limited.process(&map);
   CHECK(has(*d, 100, 100.0));
   CHECK(has(*d, 100, -100.0));
