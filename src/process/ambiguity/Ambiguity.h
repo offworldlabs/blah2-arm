@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <fftw3.h>
 #include <memory>
+#include <string>
 
 class Ambiguity
 {
@@ -21,6 +22,13 @@ class Ambiguity
 public:
 
   using Complex = std::complex<double>;
+
+  /// @brief Taper applied across batches before the Doppler FFT.
+  enum class DopplerWindow { None, Hann };
+
+  /// @brief Parse a config value: "none" or "hann".
+  /// @return False if the name is not a known window.
+  static bool parse_doppler_window(const std::string &name, DopplerWindow &window);
 
   /// @brief Constructor.
   /// @param delayMin Minimum delay (bins).
@@ -30,8 +38,10 @@ public:
   /// @param fs Sampling frequency (Hz).
   /// @param n Number of samples.
   /// @param roundHamming Round the correlation FFT length to a Hamming number for performance.
+  /// @param dopplerWindow Taper across batches. None leaves the map bit-identical to having no option.
   /// @return The object.
-  Ambiguity(int32_t delayMin, int32_t delayMax, int32_t dopplerMin, int32_t dopplerMax, uint32_t fs, uint32_t n, bool roundHamming = false);
+  Ambiguity(int32_t delayMin, int32_t delayMax, int32_t dopplerMin, int32_t dopplerMax, uint32_t fs, uint32_t n, bool roundHamming = false,
+    DopplerWindow dopplerWindow = DopplerWindow::None);
 
   /// @brief Destructor.
   /// @return Void.
@@ -107,6 +117,9 @@ private:
 
   /// @brief Number of samples to perform FFT per pulse.
   uint32_t nfft;
+
+  /// @brief Per-batch Doppler taper. Empty when the window is None.
+  std::vector<double> dopplerTaper;
 
   /// @brief Vector storage for ambiguity processing
   /// @{

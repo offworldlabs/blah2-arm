@@ -65,8 +65,9 @@ int main(int argc, char **argv)
   std::string contents = ryml_get_file(file.c_str());
   ryml::Tree tree = ryml::parse_in_arena(ryml::to_csubstr(contents));
 
-  // Detection config is read and checked here, before capture opens the SDR,
-  // so a bad value exits without leaving the device half-initialised.
+  // Detection and window config are read and checked here, before capture
+  // opens the SDR, so a bad value exits without leaving the device
+  // half-initialised.
   DetectionConfig detectionConfig;
   tree["process"]["detection"]["pfa"] >> detectionConfig.pfa;
   tree["process"]["detection"]["nGuard"] >> detectionConfig.nGuard;
@@ -82,6 +83,19 @@ int main(int argc, char **argv)
   if (tree["process"]["detection"].has_child("maxDoppler"))
   {
     tree["process"]["detection"]["maxDoppler"] >> detectionConfig.maxDoppler;
+  }
+  // Optional; absent means no window, which is the map blah2 always produced.
+  Ambiguity::DopplerWindow dopplerWindow = Ambiguity::DopplerWindow::None;
+  if (tree["process"]["ambiguity"].has_child("dopplerWindow"))
+  {
+    std::string dopplerWindowName;
+    tree["process"]["ambiguity"]["dopplerWindow"] >> dopplerWindowName;
+    if (!Ambiguity::parse_doppler_window(dopplerWindowName, dopplerWindow))
+    {
+      std::cout << "Error: process.ambiguity.dopplerWindow must be none or hann, not "
+        << dopplerWindowName << std::endl;
+      exit(1);
+    }
   }
   std::string detectionConfigError = validate_detection_config(detectionConfig);
   if (!detectionConfigError.empty())
@@ -186,7 +200,7 @@ int main(int argc, char **argv)
   // stage's only transform and chooses its own count inside its constructor.
   fftw_plan_with_nthreads(blah2::kBackStageThreads);
   Ambiguity *ambiguity = new Ambiguity(delayMin, delayMax,
-    dopplerMin, dopplerMax, fs, nSamples, roundHamming);
+    dopplerMin, dopplerMax, fs, nSamples, roundHamming, dopplerWindow);
 
   // setup process clutter
   int32_t delayMinClutter, delayMaxClutter;
