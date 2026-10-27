@@ -11,6 +11,7 @@
 #include "process/clutter/WienerHopf.h"
 #include "process/detection/CfarDetector1D.h"
 #include "process/detection/Centroid.h"
+#include "process/detection/DetectionConfig.h"
 #include "process/detection/Interpolate.h"
 #include "process/spectrum/SpectrumAnalyser.h"
 #include "process/utility/CpiPipeline.h"
@@ -63,6 +64,31 @@ int main(int argc, char **argv)
   // config handling
   std::string contents = ryml_get_file(file.c_str());
   ryml::Tree tree = ryml::parse_in_arena(ryml::to_csubstr(contents));
+
+  // Detection config is read and checked here, before capture opens the SDR,
+  // so a bad value exits without leaving the device half-initialised.
+  DetectionConfig detectionConfig;
+  tree["process"]["detection"]["pfa"] >> detectionConfig.pfa;
+  tree["process"]["detection"]["nGuard"] >> detectionConfig.nGuard;
+  tree["process"]["detection"]["nTrain"] >> detectionConfig.nTrain;
+  tree["process"]["detection"]["minDelay"] >> detectionConfig.minDelay;
+  tree["process"]["detection"]["minDoppler"] >> detectionConfig.minDoppler;
+  tree["process"]["detection"]["nCentroid"] >> detectionConfig.nCentroid;
+  // Optional, so configs written before these keys existed still load.
+  if (tree["process"]["detection"].has_child("maxDelay"))
+  {
+    tree["process"]["detection"]["maxDelay"] >> detectionConfig.maxDelay;
+  }
+  if (tree["process"]["detection"].has_child("maxDoppler"))
+  {
+    tree["process"]["detection"]["maxDoppler"] >> detectionConfig.maxDoppler;
+  }
+  std::string detectionConfigError = validate_detection_config(detectionConfig);
+  if (!detectionConfigError.empty())
+  {
+    std::cout << "Error: process.detection: " << detectionConfigError << std::endl;
+    exit(1);
+  }
 
   // setup capture
   uint32_t fs, fc;
@@ -172,20 +198,14 @@ int main(int argc, char **argv)
   WienerHopf *filter = new WienerHopf(delayMinClutter, delayMaxClutter, nSamples);
 
   // setup process detection
-  double pfa, minDoppler;
-  int8_t nGuard, nTrain;
-  int8_t minDelay;
-  tree["process"]["detection"]["pfa"] >> pfa;
-  tree["process"]["detection"]["nGuard"] >> nGuard;
-  tree["process"]["detection"]["nTrain"] >> nTrain;
-  tree["process"]["detection"]["minDelay"] >> minDelay;
-  tree["process"]["detection"]["minDoppler"] >> minDoppler;
-  CfarDetector1D *cfarDetector1D = new CfarDetector1D(pfa, nGuard, nTrain, minDelay, minDoppler);
+  CfarDetector1D *cfarDetector1D = new CfarDetector1D(detectionConfig.pfa,
+    detectionConfig.nGuard, detectionConfig.nTrain,
+    detectionConfig.minDelay, detectionConfig.maxDelay,
+    detectionConfig.minDoppler, detectionConfig.maxDoppler);
   Interpolate *interpolate = new Interpolate(true, true);
 
   // setup process centroid
-  uint16_t nCentroid;
-  tree["process"]["detection"]["nCentroid"] >> nCentroid;
+  uint16_t nCentroid = static_cast<uint16_t>(detectionConfig.nCentroid);
   Centroid *centroid = new Centroid(nCentroid, nCentroid, 1/tCpi);
 
   // setup process spectrum analyser

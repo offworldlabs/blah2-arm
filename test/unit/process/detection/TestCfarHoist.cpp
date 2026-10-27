@@ -17,6 +17,7 @@
 #include <complex>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -103,8 +104,9 @@ static void run(uint32_t nRows, uint32_t nCols, double pfa, int nGuard,
     if (j < nCols) map.data[nRows / 2][j] *= targetGain;
   map.set_metrics();
 
-  CfarDetector1D detector(pfa, int8_t(nGuard), int8_t(nTrain),
-                          int8_t(minDelay), minDoppler);
+  CfarDetector1D detector(pfa, nGuard, nTrain, minDelay,
+                          std::numeric_limits<int32_t>::max(), minDoppler,
+                          std::numeric_limits<double>::infinity());
   std::unique_ptr<Detection> produced = detector.process(&map);
   std::vector<Hit> got = fromDetection(*produced);
   std::vector<Hit> want = oracle(map, pfa, nGuard, nTrain, minDelay, minDoppler, true);

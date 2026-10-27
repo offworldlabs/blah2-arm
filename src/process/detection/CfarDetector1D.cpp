@@ -7,14 +7,17 @@
 #include <algorithm>
 
 // constructor
-CfarDetector1D::CfarDetector1D(double _pfa, int8_t _nGuard, int8_t _nTrain, int8_t _minDelay, double _minDoppler)
+CfarDetector1D::CfarDetector1D(double _pfa, int32_t _nGuard, int32_t _nTrain,
+  int32_t _minDelay, int32_t _maxDelay, double _minDoppler, double _maxDoppler)
 {
   // input
   pfa = _pfa;
   nGuard = _nGuard;
   nTrain = _nTrain;
   minDelay = _minDelay;
+  maxDelay = _maxDelay;
   minDoppler = _minDoppler;
+  maxDoppler = _maxDoppler;
 }
 
 CfarDetector1D::~CfarDetector1D()
@@ -67,11 +70,11 @@ std::unique_ptr<Detection> CfarDetector1D::process(Map<std::complex<double>> *x)
   // loop over every cell
   for (int i = 0; i < nDopplerBins; i++)
   { 
-    // skip if less than min Doppler
-    if (std::abs(x->doppler[i]) < minDoppler)
+    // skip if outside the Doppler limits
+    if (std::abs(x->doppler[i]) < minDoppler || std::abs(x->doppler[i]) > maxDoppler)
     {
       continue;
-    } 
+    }
     // Read the row in place; get_row() returned a copy of all nDelayBins.
     const std::vector<std::complex<double>> &mapRow = x->data[i];
     mapRowSquare.resize(nDelayBins);
@@ -81,8 +84,8 @@ std::unique_ptr<Detection> CfarDetector1D::process(Map<std::complex<double>> *x)
     }
     for (int j = 0; j < nDelayBins; j++)
     {
-      // skip if less than min delay
-      if (x->delay[j] < minDelay)
+      // skip if outside the delay limits
+      if (x->delay[j] < minDelay || x->delay[j] > maxDelay)
       {
         continue;
       }
