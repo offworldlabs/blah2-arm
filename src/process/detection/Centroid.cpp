@@ -25,7 +25,9 @@ std::unique_ptr<Detection> Centroid::process(Detection *x)
   snr = x->get_snr();
 
   // centroid data
-  uint16_t delayMin, delayMax;
+  // Signed: as uint16_t, delay - nDelay wrapped to ~65535 for any detection
+  // nearer than nDelay bins, so a weaker neighbour there was never removed.
+  int32_t delayMin, delayMax;
   double dopplerMin, dopplerMax;
   bool isCentroid;
   std::vector<double> delay2, doppler2, snr2;
