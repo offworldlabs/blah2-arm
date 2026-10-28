@@ -14,6 +14,10 @@
 #include <random>
 #include <iostream>
 #include <filesystem>
+#include <algorithm>
+#include <cmath>
+#include <complex>
+#include <vector>
 
 /// @brief Use random_device as RNG.
 std::random_device g_rd;
@@ -203,4 +207,104 @@ TEST_CASE("Process_File", "[process]")
     map->set_metrics();
     CHECK_THAT(map->maxPower, Catch::Matchers::WithinAbs(30.2816, 0.001));
     CHECK_THAT(map->noisePower, Catch::Matchers::WithinAbs(76.918, 0.001));
+}
+
+/// @brief Reference noise and a delayed, Doppler-shifted copy as surveillance.
+/// @details Seeded so the window tests are repeatable.
+static void delayed_echo(IqData &x, IqData &y, uint32_t fs, uint32_t delay,
+  double doppler)
+{
+  std::mt19937 gen(3);
+  std::normal_distribution<> dist;
+  std::vector<std::complex<double>> s(x.get_n() + delay);
+  for (auto &v : s) v = {dist(gen), dist(gen)};
+  for (uint32_t i = 0; i < x.get_n(); i++)
+  {
+    x.push_back(s[i + delay]);
+    y.push_back(s[i] * std::polar(1.0, 2.0 * M_PI * doppler * i / fs));
+  }
+}
+
+/// @brief Peak cell of a map: power, row and column.
+struct Peak { double power; uint32_t row, col; };
+static Peak find_peak(Map<std::complex<double>> *map)
+{
+  Peak p{0.0, 0, 0};
+  for (uint32_t i = 0; i < map->get_nRows(); i++)
+    for (uint32_t j = 0; j < map->get_nCols(); j++)
+      if (std::norm(map->data[i][j]) > p.power)
+        p = {std::norm(map->data[i][j]), i, j};
+  return p;
+}
+
+/// @brief Strongest leakage in the peak's column, at least `offset` Doppler
+/// bins from the peak, in dB relative to the peak.
+static double leakage_db(Map<std::complex<double>> *map, const Peak &p,
+  uint32_t offset)
+{
+  double worst = 0.0;
+  for (uint32_t i = 0; i < map->get_nRows(); i++)
+    if (std::abs(int(i) - int(p.row)) >= int(offset))
+      worst = std::max(worst, std::norm(map->data[i][p.col]));
+  return 10 * std::log10(worst / p.power);
+}
+
+TEST_CASE("Doppler_Window_Parse", "[window]")
+{
+  Ambiguity::DopplerWindow w = Ambiguity::DopplerWindow::Hann;
+  CHECK(Ambiguity::parse_doppler_window("none", w));
+  CHECK(w == Ambiguity::DopplerWindow::None);
+  CHECK(Ambiguity::parse_doppler_window("hann", w));
+  CHECK(w == Ambiguity::DopplerWindow::Hann);
+  CHECK_FALSE(Ambiguity::parse_doppler_window("Hann", w));
+  CHECK_FALSE(Ambiguity::parse_doppler_window("", w));
+}
+
+/// @details An echo halfway between two Doppler bins is the worst case for
+/// leakage. Without a window it spreads as a sinc, about -28 dB at 8 bins
+/// away; Hann must push that far below.
+TEST_CASE("Doppler_Window_Hann_Cuts_Leakage", "[window]")
+{
+  uint32_t fs{200'000};
+  uint32_t nSamples{100'000};
+  Ambiguity none(-10, 50, -100, 100, fs, nSamples, true);
+  Ambiguity hann(-10, 50, -100, 100, fs, nSamples, true,
+    Ambiguity::DopplerWindow::Hann);
+  double offBin = 10.5 / none.get_cpi();
+
+  IqData x1{nSamples}, y1{nSamples}, x2{nSamples}, y2{nSamples};
+  delayed_echo(x1, y1, fs, 20, offBin);
+  delayed_echo(x2, y2, fs, 20, offBin);
+  Map<std::complex<double>> *mapNone = none.process(&x1, &y1);
+  Peak peakNone = find_peak(mapNone);
+  double leakNone = leakage_db(mapNone, peakNone, 8);
+  Map<std::complex<double>> *mapHann = hann.process(&x2, &y2);
+  Peak peakHann = find_peak(mapHann);
+  double leakHann = leakage_db(mapHann, peakHann, 8);
+
+  CHECK(peakHann.col == peakNone.col);
+  CHECK(leakNone > -32.0);
+  CHECK(leakHann < leakNone - 15.0);
+}
+
+/// @details The taper is scaled to mean 1, so an echo on a bin centre keeps
+/// its peak height and only the noise floor moves.
+TEST_CASE("Doppler_Window_Hann_Keeps_Peak", "[window]")
+{
+  uint32_t fs{200'000};
+  uint32_t nSamples{100'000};
+  Ambiguity none(-10, 50, -100, 100, fs, nSamples, true);
+  Ambiguity hann(-10, 50, -100, 100, fs, nSamples, true,
+    Ambiguity::DopplerWindow::Hann);
+  double onBin = 10.0 / none.get_cpi();
+
+  IqData x1{nSamples}, y1{nSamples}, x2{nSamples}, y2{nSamples};
+  delayed_echo(x1, y1, fs, 20, onBin);
+  delayed_echo(x2, y2, fs, 20, onBin);
+  Peak peakNone = find_peak(none.process(&x1, &y1));
+  Peak peakHann = find_peak(hann.process(&x2, &y2));
+
+  CHECK(peakHann.row == peakNone.row);
+  CHECK(peakHann.col == peakNone.col);
+  CHECK(std::abs(10 * std::log10(peakHann.power / peakNone.power)) < 0.1);
 }

@@ -164,6 +164,21 @@ target_link_libraries(testCentroid PRIVATE
 set_target_properties(testCentroid PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
 
+add_executable(testDetectionLimits
+  test/unit/process/detection/TestDetectionLimits.cpp
+  src/process/detection/CfarDetector1D.cpp
+  src/data/Map.cpp
+  src/data/Detection.cpp
+)
+# armadillo is linked only to pick up the vcpkg include path, which is
+# where rapidjson lives; RAPIDJSON_INCLUDE_DIRS is NOTFOUND in this build.
+target_link_libraries(testDetectionLimits PRIVATE
+  Catch2::Catch2WithMain
+  armadillo
+)
+set_target_properties(testDetectionLimits PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
 add_executable(testCpiPipeline
   test/unit/process/utility/TestCpiPipeline.cpp
   src/data/IqData.cpp

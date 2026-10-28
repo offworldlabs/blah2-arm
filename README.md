@@ -121,7 +121,7 @@ sudo apt install graphviz
 
 - Clone this repository to some directory.
 - Install SDRplay API to run service on host.
-- Edit the `config/config.yml` for desired processing parameters.
+- Edit the `config/config.yml` for desired processing parameters. [config/README.md](config/README.md) explains each one.
 - Run the docker-compose command.
 
 ```bash
