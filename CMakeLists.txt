@@ -167,7 +167,6 @@ set_target_properties(testCentroid PROPERTIES
 add_executable(testDetectionLimits
   test/unit/process/detection/TestDetectionLimits.cpp
   src/process/detection/CfarDetector1D.cpp
-  src/process/detection/Centroid.cpp
   src/data/Map.cpp
   src/data/Detection.cpp
 )

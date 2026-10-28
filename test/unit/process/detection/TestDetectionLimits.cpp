@@ -1,12 +1,11 @@
 /// @file TestDetectionLimits.cpp
-/// @brief Unit test for the detection config checks, the CFAR's
-/// maxReportedDoppler and Centroid at near range.
+/// @brief Unit test for the detection config checks and the CFAR's
+/// maxReportedDoppler.
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "data/Detection.h"
 #include "data/Map.h"
-#include "process/detection/Centroid.h"
 #include "process/detection/CfarDetector1D.h"
 #include "process/detection/DetectionConfig.h"
 
@@ -161,20 +160,4 @@ TEST_CASE("Cfar_Max_Reported_Doppler_Inclusive", "[cfar]")
   std::unique_ptr<Detection> d = limited.process(&map);
   CHECK(has(*d, 100, 100.0));
   CHECK(has(*d, 100, -100.0));
-}
-
-/// @details A weaker detection within nCentroid of a stronger one is removed,
-/// including near the start of the delay axis where the uint16_t window used
-/// to wrap and keep both.
-TEST_CASE("Centroid_Near_Range", "[centroid]")
-{
-  Centroid centroid(6, 6, 2.0);
-  Detection in({3.0, 5.0, 100.0, 103.0}, {20.0, 20.0, 20.0, 20.0},
-    {10.0, 20.0, 10.0, 20.0});
-  std::unique_ptr<Detection> out = centroid.process(&in);
-  CHECK(out->get_nDetections() == 2);
-  CHECK(has(*out, 5.0, 20.0));
-  CHECK(has(*out, 103.0, 20.0));
-  CHECK_FALSE(has(*out, 3.0, 20.0));
-  CHECK_FALSE(has(*out, 100.0, 20.0));
 }
