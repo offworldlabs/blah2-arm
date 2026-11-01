@@ -7,7 +7,8 @@
 #include <algorithm>
 
 // constructor
-CfarDetector1D::CfarDetector1D(double _pfa, int8_t _nGuard, int8_t _nTrain, int8_t _minDelay, double _minDoppler)
+CfarDetector1D::CfarDetector1D(double _pfa, int32_t _nGuard, int32_t _nTrain,
+  int32_t _minDelay, double _minDoppler, double _maxReportedDoppler)
 {
   // input
   pfa = _pfa;
@@ -15,6 +16,7 @@ CfarDetector1D::CfarDetector1D(double _pfa, int8_t _nGuard, int8_t _nTrain, int8
   nTrain = _nTrain;
   minDelay = _minDelay;
   minDoppler = _minDoppler;
+  maxReportedDoppler = _maxReportedDoppler;
 }
 
 CfarDetector1D::~CfarDetector1D()
@@ -67,11 +69,11 @@ std::unique_ptr<Detection> CfarDetector1D::process(Map<std::complex<double>> *x)
   // loop over every cell
   for (int i = 0; i < nDopplerBins; i++)
   { 
-    // skip if less than min Doppler
-    if (std::abs(x->doppler[i]) < minDoppler)
+    // skip if outside the Doppler limits
+    if (std::abs(x->doppler[i]) < minDoppler || std::abs(x->doppler[i]) > maxReportedDoppler)
     {
       continue;
-    } 
+    }
     // Read the row in place; get_row() returned a copy of all nDelayBins.
     const std::vector<std::complex<double>> &mapRow = x->data[i];
     mapRowSquare.resize(nDelayBins);

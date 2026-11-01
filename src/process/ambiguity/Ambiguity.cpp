@@ -5,12 +5,13 @@
 #include <vector>
 #include <numeric>
 #include <math.h>
+#include <cmath>
 #include <chrono>
 
 // constructor
 Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax, 
   int32_t _dopplerMin, int32_t _dopplerMax, uint32_t _fs, 
-  uint32_t _n, bool _roundHamming)
+  uint32_t _n, bool _roundHamming, DopplerWindow _dopplerWindow)
 {
   // init
   delayMin = _delayMin;
@@ -64,6 +65,17 @@ Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax,
     nfft = next_hamming(nfft);
   }
 
+  // Periodic Hann scaled to mean 1, so a target's peak keeps its height and
+  // the noise floor rises by the window's 1.76 dB processing loss instead.
+  if (_dopplerWindow == DopplerWindow::Hann)
+  {
+    dopplerTaper.resize(nDopplerBins);
+    for (uint16_t k = 0; k < nDopplerBins; k++)
+    {
+      dopplerTaper[k] = 1.0 - std::cos(2.0 * M_PI * k / nDopplerBins);
+    }
+  }
+
   // compute FFTW plans in constructor
   dataXi.resize(nfft);
   dataYi.resize(nfft);
@@ -78,6 +90,21 @@ Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax,
   fftDoppler = fftw_plan_dft_1d(nDopplerBins, reinterpret_cast<fftw_complex *>(dataDoppler.data()),
                                 reinterpret_cast<fftw_complex *>(dataDoppler.data()), FFTW_FORWARD, FFTW_ESTIMATE);
 
+}
+
+bool Ambiguity::parse_doppler_window(const std::string &name, DopplerWindow &window)
+{
+  if (name == "none")
+  {
+    window = DopplerWindow::None;
+    return true;
+  }
+  if (name == "hann")
+  {
+    window = DopplerWindow::Hann;
+    return true;
+  }
+  return false;
 }
 
 Ambiguity::~Ambiguity()
@@ -148,6 +175,10 @@ Map<std::complex<double>> *Ambiguity::process(IqData *x, IqData *y)
     for (uint16_t j = 0; j < nDopplerBins; j++)
     {
       dataDoppler[j] = map->data[j][i];
+    }
+    for (size_t j = 0; j < dopplerTaper.size(); j++)
+    {
+      dataDoppler[j] *= dopplerTaper[j];
     }
 
     fftw_execute(fftDoppler);
