@@ -72,6 +72,11 @@ sudo systemctl start sdrplay.service
 `sdrplay-restart.sh` does not restart anything: it runs before blah2 in the container
 and only pauses.
 
+`script/blah2_rspduo_restart.bash` (the cron watchdog) mirrors owl-os's
+`plugins/playbooks/os_setup/roles/radar_packages/files/blah2_rspduo_restart.bash`, which
+is the copy nodes run. Change it there first, then copy it here unchanged. See owl-os
+`docs/rspduo-watchdog.md`.
+
 ### Configuration
 - Main config: `config/config.yml`
 - Device-specific configs available in `config/` directory

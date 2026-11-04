@@ -154,7 +154,7 @@ The radar processing output is available on [http://localhost:49152](http://loca
 
 ## FAQ
 
-- If the SDRplay RSPduo does not capture data, restart the API service (on the host) using the script `sudo ./script/blah2_rspduo_restart.bash`.
+- If the SDRplay RSPduo does not capture data, run the watchdog on the host: `sudo ./script/blah2_rspduo_restart.bash`. It acts only when the map data is stale. It restarts the stack and the API service, and from its second recovery in a row it also resets the RSPduo on USB. On owl-os nodes cron runs it every 5 minutes. This file mirrors owl-os's copy, so change it there first: see owl-os `docs/rspduo-watchdog.md`.
 
 ## Contributing
 
