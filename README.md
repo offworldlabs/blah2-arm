@@ -170,4 +170,24 @@ Pull requests are welcome - especially for adding support for a new SDR.
 
 ## License
 
-[MIT](https://choosealicense.com/licenses/mit/)
+Copyright (C) 2026 Offworld Labs
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+General Public License for more details.
+
+The full licence text is in [LICENSE](LICENSE).
+
+### Third-party code
+
+Parts of this repository are derived from software released under the MIT
+License. Those parts remain available under the MIT License, and their
+copyright and permission notices are reproduced in [LICENSE-MIT](LICENSE-MIT),
+as that licence requires. The combined work is distributed under the
+GNU Affero General Public License, version 3 or later.
