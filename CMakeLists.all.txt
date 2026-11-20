@@ -58,9 +58,11 @@ add_executable(blah2
   src/process/spectrum/SpectrumAnalyser.cpp
   src/process/meta/HammingNumber.cpp
   src/process/utility/Socket.cpp
+  src/data/IqCache.cpp
   src/data/IqData.cpp
   src/data/Map.cpp
   src/data/Detection.cpp
+  src/data/TuningLog.cpp
   src/data/meta/Timing.cpp
 )
 

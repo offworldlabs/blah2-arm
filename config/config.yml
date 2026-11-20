@@ -44,6 +44,9 @@ process:
     minDoppler: 15
     maxReportedDoppler: 1000
     nCentroid: 6
+  iqCache:
+    enable: false
+    nCpi: 48
 
 network:
   ip: 0.0.0.0

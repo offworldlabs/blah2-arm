@@ -228,3 +228,24 @@ slower length at any other value. 0.5 s is also about as long as a manoeuvring
 small drone stays in one Doppler bin at 503 MHz.
 
 `overlap` is not read by blah2.
+
+## `process.iqCache`
+
+| Key | Default | Unit |
+| --- | --- | --- |
+| `enable` | false (also when the section is absent) | |
+| `nCpi` | 48 | CPIs held |
+
+Keeps the raw IQ of the last `nCpi` CPIs in RAM as int16, exactly as extracted
+before the clutter filter, keyed by the same timestamp as the CPI's map and
+detections. It changes nothing the radar outputs. Each frame holds only that
+timestamp, an id and the samples; `fc`, gain and LNA state are kept in a separate
+log of changes, which blah2 records whether or not the cache is enabled.
+
+Each CPI costs 8 MB at the shipped capture (`fs` × `cpi` samples per channel, two
+channels, 4 bytes per sample). All of it is committed when blah2 starts, so
+48 CPIs raise blah2's RSS by 384 MB at once. On a 2 GB node, budget about 500 MB
+in total. `nCpi` must be between 1 and 10000; anything else stops blah2 at
+startup.
+
+Design, sizing, and how to measure its cost: `docs/iq-cache.md`.

@@ -3,8 +3,10 @@
 /// @author 30hours
 
 #include "capture/Capture.h"
+#include "data/IqCache.h"
 #include "data/IqData.h"
 #include "data/Map.h"
+#include "data/TuningLog.h"
 #include "data/Detection.h"
 #include "data/meta/Timing.h"
 #include "process/ambiguity/Ambiguity.h"
@@ -38,6 +40,7 @@
 
 Capture *CAPTURE_POINTER = NULL;
 TuneState g_tuneState;
+TuningLog g_tuningLog;
 
 void signal_callback_handler(int signum);
 void getopt_print_help();
@@ -99,6 +102,24 @@ int main(int argc, char **argv)
     std::cout << "Error: process.detection: " << detectionConfigError << std::endl;
     exit(1);
   }
+  // IQ cache. Optional and off when absent, so older configs still load.
+  // 0 CPIs means off. See docs/iq-cache.md.
+  int64_t iqCacheNCpi = 0;
+  if (tree["process"].has_child("iqCache"))
+  {
+    bool iqCacheEnable = false;
+    tree["process"]["iqCache"]["enable"] >> iqCacheEnable;
+    if (iqCacheEnable)
+    {
+      tree["process"]["iqCache"]["nCpi"] >> iqCacheNCpi;
+      if (iqCacheNCpi < 1 || iqCacheNCpi > 10000)
+      {
+        std::cout << "Error: process.iqCache.nCpi must be between 1 and 10000, not "
+          << iqCacheNCpi << std::endl;
+        exit(1);
+      }
+    }
+  }
 
   // setup capture
   uint32_t fs, fc;
@@ -137,13 +158,39 @@ int main(int argc, char **argv)
   IqData *buffer1 = new IqData((int) (tCpi*tBuffer*fs));
   IqData *buffer2 = new IqData((int) (tCpi*tBuffer*fs));
 
+  // setup process CPI
+  uint32_t nSamples = fs * tCpi;
+
+  // Allocated before capture opens the SDR, so a node that cannot afford it
+  // fails before the device is touched.
+  std::unique_ptr<IqCache> iqCache;
+  if (iqCacheNCpi > 0)
+  {
+    iqCache = std::make_unique<IqCache>(static_cast<uint32_t>(iqCacheNCpi), nSamples);
+    std::cout << "IQ cache: " << iqCacheNCpi << " CPIs, "
+      << iqCache->get_bytes() / (1024 * 1024) << " MB" << std::endl;
+  }
+  // Baseline of the tuning log: the tuning as configured, before capture can
+  // change it. Gain keys are the RSPduo's; other devices log fc alone.
+  {
+    int32_t gainReductionA = 0, gainReductionB = 0, lnaState = 0;
+    c4::yml::NodeRef device = tree["capture"]["device"];
+    if (device.has_child("gainReduction") && device["gainReduction"].num_children() == 2)
+    {
+      device["gainReduction"][0] >> gainReductionA;
+      device["gainReduction"][1] >> gainReductionB;
+    }
+    if (device.has_child("lnaState"))
+    {
+      device["lnaState"] >> lnaState;
+    }
+    g_tuningLog.set_config(current_time_ms(), fc, gainReductionA, gainReductionB, lnaState);
+  }
+
   // run capture
   std::thread t1([&]{capture->process(buffer1, buffer2,
     tree["capture"]["device"], ip_capture, port_capture, verbose);
   });
-
-  // setup process CPI
-  uint32_t nSamples = fs * tCpi;
 
   // Slots in flight between the two processing stages. Two is enough for full
   // overlap: the front stage fills one while the back stage drains the other,
@@ -252,6 +299,8 @@ int main(int argc, char **argv)
   // Front stage: pull a CPI out of the capture buffers and clutter filter it.
   // This is the slow half, so it sets the throughput of the whole radar.
   std::thread t2([&]{
+      bool iqCacheInexactReported = false;
+
       while (true)
       {
         blah2::CpiSlot *slot = freeSlots.pop();
@@ -289,6 +338,20 @@ int main(int argc, char **argv)
         if (slot->fcChanged)
         {
           slot->fc = g_tuneState.currentFc.load();
+        }
+
+        // Cache the CPI exactly as extracted. It has to happen here: the
+        // clutter filter overwrites y and ambiguity drains x.
+        if (iqCache)
+        {
+          if (!iqCache->write(*slot->x, *slot->y, slot->time[0] / 1000)
+            && !iqCacheInexactReported)
+          {
+            iqCacheInexactReported = true;
+            std::cerr << "Warning: IQ cache rounded or clipped samples to fit int16; "
+              << "such frames are counted as inexact" << std::endl;
+          }
+          timing_helper(slot->timingName, slot->timingTime, slot->time, "iq_cache");
         }
 
         // clutter filter

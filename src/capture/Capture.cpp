@@ -1,5 +1,6 @@
 #include "Capture.h"
 #include "rspduo/RspDuo.h"
+#include "data/TuningLog.h"
 #include "process/utility/TuneState.h"
 #include <iostream>
 #include <thread>
@@ -106,6 +107,8 @@ void Capture::process(IqData *buffer1, IqData *buffer2, c4::yml::NodeRef config,
             }
             auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::system_clock::now().time_since_epoch()).count();
+            g_tuningLog.add_retune(static_cast<uint64_t>(now), generation, newFc,
+              newGainA, newGainB, newLnaState);
             std::string ack = std::to_string(generation) + ","
               + std::to_string(newFc) + ","
               + std::to_string(newGainA) + ","

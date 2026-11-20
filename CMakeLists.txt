@@ -53,9 +53,11 @@ add_executable(blah2
   src/process/spectrum/SpectrumAnalyser.cpp
   src/process/meta/HammingNumber.cpp
   src/process/utility/Socket.cpp
+  src/data/IqCache.cpp
   src/data/IqData.cpp
   src/data/Map.cpp
   src/data/Detection.cpp
+  src/data/TuningLog.cpp
   src/data/meta/Timing.cpp
 )
 
@@ -217,6 +219,30 @@ target_link_libraries(testIqData PRIVATE
 set_target_properties(testIqData PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
 
+add_executable(testIqCache
+  test/unit/data/TestIqCache.cpp
+  src/data/IqCache.cpp
+  src/data/IqData.cpp
+)
+# armadillo is linked only to pick up the vcpkg include path, which is
+# where rapidjson lives; RAPIDJSON_INCLUDE_DIRS is NOTFOUND in this build.
+target_link_libraries(testIqCache PRIVATE
+  armadillo
+  Threads::Threads
+)
+set_target_properties(testIqCache PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
+add_executable(testTuningLog
+  test/unit/data/TestTuningLog.cpp
+  src/data/TuningLog.cpp
+)
+target_link_libraries(testTuningLog PRIVATE
+  Threads::Threads
+)
+set_target_properties(testTuningLog PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_TEST_UNIT_DIR}")
+
 add_executable(testSpectrumFold
   test/unit/process/spectrum/TestSpectrumFold.cpp
   src/process/spectrum/SpectrumAnalyser.cpp
@@ -235,6 +261,8 @@ set_target_properties(testSpectrumFold PROPERTIES
 # TODO: Unsure if will be using CTest.
 add_test(NAME testSpectrumFold COMMAND testSpectrumFold)
 add_test(NAME testIqData COMMAND testIqData)
+add_test(NAME testIqCache COMMAND testIqCache)
+add_test(NAME testTuningLog COMMAND testTuningLog)
 add_test(NAME testAmbiguity COMMAND testAmbiguity)
 add_test(NAME testClutterFft COMMAND testClutterFft)
 add_test(NAME testJsonKm COMMAND testJsonKm)
