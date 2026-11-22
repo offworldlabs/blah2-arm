@@ -28,3 +28,6 @@ api/PRE_DEPLOY_TEST.sh
 
 # Claude Code planning files
 .plans/
+
+# Python bytecode (python/blah2_iq.py and its test)
+__pycache__/

@@ -1,9 +1,5 @@
-// TuningLog, the per-run record of every tuning change.
-//
-// A frame's tuning is read from this log by timestamp, so what matters is that
-// every change is kept in order with the fields its kind carries, that the
-// configured baseline can never be lost, and that writers on the capture and
-// SDRplay callback threads cannot corrupt it.
+// TuningLog: entry order and fields, the bound keeping Config, the sink, and
+// concurrent writers. See docs/iq-cache.md.
 #include "data/TuningLog.h"
 
 #include <cstdint>
@@ -50,8 +46,6 @@ static void order_and_fields()
   require(log.get_n_dropped() == 0, "nothing dropped");
 }
 
-// Full, the oldest change goes and the config baseline stays, so the log
-// still describes every frame back to startup.
 static void bounded_keeps_config()
 {
   TuningLog log(4);
@@ -66,8 +60,6 @@ static void bounded_keeps_config()
   require(log.get_n_dropped() == 7, "drops counted");
 }
 
-// A gain event can arrive before main records the config. The config must
-// still be first.
 static void config_after_event()
 {
   TuningLog log;
@@ -87,8 +79,6 @@ static void config_after_event()
   require(threwSmall, "a log too small for the config and one change should be refused");
 }
 
-// The retune thread and the SDRplay callback append concurrently while a
-// reader snapshots. Nothing may be lost or reordered within a writer.
 static void concurrent()
 {
   const uint64_t perWriter = 5000;

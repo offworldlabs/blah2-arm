@@ -235,17 +235,23 @@ small drone stays in one Doppler bin at 503 MHz.
 | --- | --- | --- |
 | `enable` | false (also when the section is absent) | |
 | `nCpi` | 48 | CPIs held |
+| `path` | `/dev/shm/blah2-iq` | shared-memory file |
 
-Keeps the raw IQ of the last `nCpi` CPIs in RAM as int16, exactly as extracted
-before the clutter filter, keyed by the same timestamp as the CPI's map and
-detections. It changes nothing the radar outputs. Each frame holds only that
-timestamp, an id and the samples; `fc`, gain and LNA state are kept in a separate
-log of changes, which blah2 records whether or not the cache is enabled.
+Keeps the raw IQ of the last `nCpi` CPIs as int16, exactly as extracted before
+the clutter filter, in a shared-memory file that other processes on the node map
+read-only (with `python/blah2_iq.py`). Frames are keyed by the same timestamp as
+the CPI's map and detections. It changes nothing the radar outputs. The file
+also holds the config blah2 loaded, its image tag, and the log of `fc`, gain and
+LNA state changes.
 
 Each CPI costs 8 MB at the shipped capture (`fs` × `cpi` samples per channel, two
-channels, 4 bytes per sample). All of it is committed when blah2 starts, so
-48 CPIs raise blah2's RSS by 384 MB at once. On a 2 GB node, budget about 500 MB
-in total. `nCpi` must be between 1 and 10000; anything else stops blah2 at
-startup.
+channels, 4 bytes per sample). All of it is reserved when blah2 starts, so
+48 CPIs take 384 MB (366 MiB) of RAM at once. `/dev/shm` is RAM, not the SD card.
+On a 2 GB node, budget about 500 MB in total. `nCpi` must be between 3 and 10000;
+anything else stops blah2 at startup. A reader can use about `nCpi - 2` of the
+frames: the two oldest are left as a margin against the writer.
+
+With `enable: false`, blah2 deletes the file at startup, so a file left by an
+earlier run does not hold its RAM until reboot.
 
 Design, sizing, and how to measure its cost: `docs/iq-cache.md`.

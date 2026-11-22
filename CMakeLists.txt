@@ -223,6 +223,7 @@ add_executable(testIqCache
   test/unit/data/TestIqCache.cpp
   src/data/IqCache.cpp
   src/data/IqData.cpp
+  src/data/TuningLog.cpp
 )
 # armadillo is linked only to pick up the vcpkg include path, which is
 # where rapidjson lives; RAPIDJSON_INCLUDE_DIRS is NOTFOUND in this build.

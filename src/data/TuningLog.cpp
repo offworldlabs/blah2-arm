@@ -24,8 +24,6 @@ void TuningLog::set_config(uint64_t timestamp, uint32_t fc, int32_t gainReductio
   entry.gainReductionA = gainReductionA;
   entry.gainReductionB = gainReductionB;
   entry.lnaState = lnaState;
-  // At the front whatever arrived first: it is the baseline, and eviction
-  // below relies on it sitting there.
   log.push_front(entry);
   haveConfig = true;
 }
@@ -62,12 +60,22 @@ void TuningLog::append(const Entry &entry)
   std::lock_guard<std::mutex> lock(mutex);
   if (log.size() == capacity)
   {
-    // Drop the oldest change but keep the config baseline. Only a node
-    // running AGC could produce events fast enough to get here.
     log.erase(log.begin() + (haveConfig ? 1 : 0));
     nDropped++;
   }
   log.push_back(entry);
+  if (sink)
+    sink(entry);
+}
+
+void TuningLog::attach(std::function<void(const Entry &)> _sink)
+{
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!haveConfig)
+    throw std::logic_error("TuningLog::attach before set_config");
+  for (const Entry &entry : log)
+    _sink(entry);
+  sink = std::move(_sink);
 }
 
 std::vector<TuningLog::Entry> TuningLog::entries() const

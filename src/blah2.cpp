@@ -102,23 +102,32 @@ int main(int argc, char **argv)
     std::cout << "Error: process.detection: " << detectionConfigError << std::endl;
     exit(1);
   }
-  // IQ cache. Optional and off when absent, so older configs still load.
-  // 0 CPIs means off. See docs/iq-cache.md.
+  // IQ cache, see docs/iq-cache.md. Off (0 CPIs) when absent.
   int64_t iqCacheNCpi = 0;
+  std::string iqCachePath = iqshm::kDefaultPath;
   if (tree["process"].has_child("iqCache"))
   {
+    if (tree["process"]["iqCache"].has_child("path"))
+    {
+      tree["process"]["iqCache"]["path"] >> iqCachePath;
+    }
     bool iqCacheEnable = false;
     tree["process"]["iqCache"]["enable"] >> iqCacheEnable;
     if (iqCacheEnable)
     {
       tree["process"]["iqCache"]["nCpi"] >> iqCacheNCpi;
-      if (iqCacheNCpi < 1 || iqCacheNCpi > 10000)
+      if (iqCacheNCpi < iqshm::kMinSlots || iqCacheNCpi > 10000)
       {
-        std::cout << "Error: process.iqCache.nCpi must be between 1 and 10000, not "
-          << iqCacheNCpi << std::endl;
+        std::cout << "Error: process.iqCache.nCpi must be between " << iqshm::kMinSlots
+          << " and 10000, not " << iqCacheNCpi << std::endl;
         exit(1);
       }
     }
+  }
+  // Off: delete any earlier file, or tmpfs holds its RAM until reboot.
+  if (iqCacheNCpi == 0 && IqCache::remove(iqCachePath))
+  {
+    std::cout << "IQ cache off: removed " << iqCachePath << std::endl;
   }
 
   // setup capture
@@ -161,17 +170,31 @@ int main(int argc, char **argv)
   // setup process CPI
   uint32_t nSamples = fs * tCpi;
 
-  // Allocated before capture opens the SDR, so a node that cannot afford it
-  // fails before the device is touched.
+  // Before capture opens the SDR, so a failure leaves the device untouched.
   std::unique_ptr<IqCache> iqCache;
   if (iqCacheNCpi > 0)
   {
-    iqCache = std::make_unique<IqCache>(static_cast<uint32_t>(iqCacheNCpi), nSamples);
+    IqCache::Run run;
+    run.path = iqCachePath;
+    run.fs = fs;
+    run.cpi = tCpi;
+    run.runId = current_time_ms();
+    const char *image = std::getenv("BLAH2_IMAGE");
+    run.imageTag = image != nullptr ? image : "";
+    run.configText = contents;
+    try
+    {
+      iqCache = std::make_unique<IqCache>(static_cast<uint32_t>(iqCacheNCpi), nSamples, run);
+    }
+    catch (const std::exception &e)
+    {
+      std::cout << "Error: " << e.what() << std::endl;
+      exit(1);
+    }
     std::cout << "IQ cache: " << iqCacheNCpi << " CPIs, "
-      << iqCache->get_bytes() / (1024 * 1024) << " MB" << std::endl;
+      << iqCache->get_total_bytes() / (1024 * 1024) << " MiB at " << iqCachePath << std::endl;
   }
-  // Baseline of the tuning log: the tuning as configured, before capture can
-  // change it. Gain keys are the RSPduo's; other devices log fc alone.
+  // Tuning log baseline. Gain keys are the RSPduo's; other devices log fc alone.
   {
     int32_t gainReductionA = 0, gainReductionB = 0, lnaState = 0;
     c4::yml::NodeRef device = tree["capture"]["device"];
@@ -185,6 +208,11 @@ int main(int argc, char **argv)
       device["lnaState"] >> lnaState;
     }
     g_tuningLog.set_config(current_time_ms(), fc, gainReductionA, gainReductionB, lnaState);
+  }
+  if (iqCache)
+  {
+    IqCache *cache = iqCache.get();
+    g_tuningLog.attach([cache](const TuningLog::Entry &entry) { cache->append_tuning(entry); });
   }
 
   // run capture
@@ -340,8 +368,7 @@ int main(int argc, char **argv)
           slot->fc = g_tuneState.currentFc.load();
         }
 
-        // Cache the CPI exactly as extracted. It has to happen here: the
-        // clutter filter overwrites y and ambiguity drains x.
+        // Here, before the clutter filter overwrites y and ambiguity drains x.
         if (iqCache)
         {
           if (!iqCache->write(*slot->x, *slot->y, slot->time[0] / 1000)

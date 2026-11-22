@@ -57,3 +57,11 @@ python3 test/infrastructure/test_merge_config.py -v
 ```
 
 Requirements: `pyyaml`, `mergedeep
+## Shared-memory IQ cache, across processes
+
+`test/shm/run.sh` builds `test/shm/IqShmWriter`, a stand-in for blah2's front
+stage, and runs `python/test_blah2_iq.py` against it, so the Python reader is
+tested against the real C++ writer across a process boundary. It needs g++ and
+numpy; pass a rapidjson include directory if it is not on the default path. It
+is not part of the build-stage test run, whose image has no numpy. See
+`docs/iq-cache.md`.

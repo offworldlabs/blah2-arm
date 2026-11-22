@@ -918,8 +918,6 @@ void *cbContext)
     std::cerr << "gRdB=" << params->gainParams.gRdB << " ";
     std::cerr << "lnaGRdB=" << params->gainParams.lnaGRdB << " ";
     std::cerr << "systemGain=" << params->gainParams.currGain << std::endl;
-    // Safe from this callback: the log's mutex is never held across a call
-    // into the SDRplay API (see TuningLog.h).
     g_tuningLog.add_gain_event(
       static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count()),
