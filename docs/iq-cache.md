@@ -14,8 +14,8 @@ retina-telemetry can send them to the server. Configured by `process.iqCache`
 | The reader | `python/blah2_iq.py`, one file, needs only numpy. Consumers copy it. |
 | Tests | `test/unit/data/TestIqCache.cpp`, `test/unit/data/TestTuningLog.cpp`, and the cross-process `test/shm/run.sh` |
 
-Status: writer and reader built and tested. Not yet wired into any consumer, and
-the retina-node changes they need (below) are not made.
+Status: writer and reader built, tested and measured on a node (below). Not yet
+wired into any consumer, and the retina-node changes they need are not made.
 
 ## Why shared memory
 
@@ -237,24 +237,43 @@ jonathan-node-2) running v0.8.0 at ±1000 Hz with no swap: MemAvailable was
 spare. `docker stats` reads 0B on these nodes because the kernel boots with
 `cgroup_disable=memory`; use per-process RSS and `/proc/meminfo`.
 
-## Measured cost of the write
+## Measured cost
 
-owl-ded9, 2026-11-20, A-B-A at `nCpi: 48`, `fs` 2 MHz, `cpi` 0.5 s, ±1000 Hz, with
-the earlier heap-backed version of the ring (the same copy into different
-memory). 290 s windows after a 120 s settle:
+owl-ded9, 2026-11-22, commit `8426e14`, `nCpi: 48`, `fs` 2 MHz, `cpi` 0.5 s,
+±1000 Hz. 292 s windows. Readers ran in the retina-tracker image with
+`/dev/shm` mounted read-only.
 
-| | v0.8.0 | cache off | **cache on** | cache off |
-| --- | --- | --- | --- | --- |
-| Throughput (CPI/s) | 1.9997 | 2.0002 | **2.0008** | 2.0019 |
-| blah2 RSS | 190.5 MB | 190.8 MB | **556.3 MB** | 190.4 MB |
-| MemAvailable, mean / min | 842 / 813 MB | 845 / 829 MB | **448 / 428 MB** | 816 / 800 MB |
-| `iq_cache` stage | | | **13.0 ± 2.3 ms** | |
-| Front stage (extract, cache, clutter) | 199.3 ms | 197.9 ms | **217.6 ms** | 200.9 ms |
-| blah2 CPU (% of one core) | 107.7% | 107.6% | **111.4%** | 107.8% |
+| | v0.8.0 | off | on | on + burst reader | on + scan reader | off |
+| --- | --- | --- | --- | --- | --- | --- |
+| Throughput (CPI/s) | 1.9989 | 1.9995 | 2.0011 | 1.9985 | 2.0024 | 2.0023 |
+| Shmem | 91 MB | 91 MB | 458 MB | 458 MB | 458 MB | 92 MB |
+| MemAvailable, mean / min | 887 / 872 MB | 895 / 878 MB | 526 / 502 MB | 510 / 490 MB | 504 / 484 MB | 898 / 883 MB |
+| `iq_cache` stage | | | 13.8 ms | 13.1 ms | 13.0 ms | |
+| Front stage (extract, cache, clutter) | 199.2 ms | 197.2 ms | 218.4 ms | 216.7 ms | 218.5 ms | 198.7 ms |
+| Back stage | 260.1 ms | 253.9 ms | 255.9 ms | 257.2 ms | 249.7 ms | 253.8 ms |
+| blah2 CPU (% of one core) | 107.0% | 107.6% | 110.8% | 110.8% | 111.0% | 107.6% |
+| Reader CPU | | | | 0.0% | 1.1% | |
 
-Real time held throughout. RSS rose by exactly the ring and stayed flat. The
-disabled path costs nothing. The shared-memory version needs the same
-measurement repeated, with readers running.
+- Real time held throughout. The write costs 13-14 ms and about 3 points of
+  one core, the same as the earlier heap-backed version (2026-11-20).
+  `extract_buffer` rises about 6 ms with the cache on, from memory contention.
+- The scan reader copied every CPI (826 frames, none lapped), 5.3 ms per frame.
+  blah2's CPU and stage times did not change: readers cost the radar nothing
+  measurable. The burst reader saved 20 frames every 30 s to `/dev/null`, which
+  the kernel does not read, so it measured bookkeeping only.
+- blah2's RSS (557 MB with the cache on) counts the shared pages it maps; the
+  RAM is counted once, as Shmem.
+
+**Scaling with more readers.** blah2 does no work per reader and the file does
+not grow, so extra readers cost only their own CPU and RAM and the memory
+bandwidth of the bytes they touch: 32 MB/s for a reader copying every CPI, or
+160 MB per 20-CPI burst. One full-rate reader was not measurable; more are not
+yet measured. The first sign of saturation would be `extract_buffer` and
+`clutter_filter` rising. Readers should prefer `save()` to `read()` when writing
+to disk, and touch only the samples they need. The deadline is per reader and
+does not change with their number. A reader saving W frames to a card that
+writes S MB/s must satisfy W × (1 + 16 / S) ≤ 46 to finish before the oldest is
+lapped, about 25 CPIs at an assumed 20 MB/s.
 
 ## Not done yet
 
