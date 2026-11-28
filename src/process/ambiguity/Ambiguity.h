@@ -32,7 +32,8 @@ public:
 
   /// @brief Constructor.
   /// @param delayMin Minimum delay (bins).
-  /// @param delayMax Maximum delay (bins).
+  /// @param delayMax Maximum delay (bins). Not limited by nCorr: each batch
+  /// reads a surveillance segment longer than itself by the window.
   /// @param dopplerMin Minimum Doppler (Hz).
   /// @param dopplerMax Maximum Doppler (Hz).
   /// @param fs Sampling frequency (Hz).
@@ -40,6 +41,8 @@ public:
   /// @param roundHamming Round the correlation FFT length to a Hamming number for performance.
   /// @param dopplerWindow Taper across batches. None leaves the map bit-identical to having no option.
   /// @return The object.
+  /// @throws std::invalid_argument if a batch has no samples, or the delay
+  /// window is empty or longer than the CPI.
   Ambiguity(int32_t delayMin, int32_t delayMax, int32_t dopplerMin, int32_t dopplerMax, uint32_t fs, uint32_t n, bool roundHamming = false,
     DopplerWindow dopplerWindow = DopplerWindow::None);
 
@@ -97,6 +100,9 @@ private:
 
   /// @brief Number of correlation samples per pulse.
   uint16_t nCorr;
+
+  /// @brief Surveillance samples read per batch: nCorr + nDelayBins - 1.
+  uint32_t nSegment;
 
   /// @brief True CPI time (s).
   double cpi;
