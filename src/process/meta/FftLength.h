@@ -5,17 +5,34 @@
 
 namespace blah2 {
 
-// The thread count every FFTW plan outside the clutter filter is built with.
+// The thread count the spectrum analyser plans at, and the planner default
+// the clutter filter restores after planning its own transforms.
 //
-// Both of those plan sites, the ambiguity processor and the spectrum analyser,
-// run in the back stage. The front stage's only FFTW consumer is the clutter
-// filter, and it selects its own count below, so there is deliberately no
-// front-stage constant: there is nothing left for one to govern.
+// The spectrum analyser runs in the back stage alongside the ambiguity
+// processor, which sets its own count below. The front stage's only FFTW
+// consumer is the clutter filter, and it selects its own count too, so there
+// is deliberately no front-stage constant: there is nothing left for one to
+// govern.
 //
 // The two stages run concurrently and so share four cores rather than each
-// claiming all of them. The ambiguity batch transforms are the ones that pay
-// for threads.
+// claiming all of them.
 inline constexpr int kBackStageThreads = 2;
+
+// The thread count the ambiguity processor plans its batch transforms at.
+//
+// Each CPI runs three transforms per Doppler bin, 3003 at ±1000 Hz, of only
+// nCorr + delay window points: 1440 at the shipped geometry. At that size a
+// second thread costs more in sync than it recovers, the same as the clutter
+// filter's 2048-point blocks. Measured in situ on owl-ded9 (2 MHz, ±1000 Hz,
+// two 7-minute rounds each, ClickUp 123zgecjc4k):
+//
+//   threads   ambiguity_processing (ms)   cpi (ms)
+//      2         144.4 / 144.7            426.7 / 426.9
+//      1          87.6 /  87.7            357.7 / 359.8
+//
+// and at a lower fs, 133.0 -> 55.0 ms at 250 kHz and 138.5 -> 66.6 ms at
+// 500 kHz. The spread fell too, from a 15 ms to a 4 ms standard deviation.
+inline constexpr int kAmbiguityThreads = 1;
 
 // The thread count the clutter filter plans its own transforms at.
 //

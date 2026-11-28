@@ -18,6 +18,7 @@
 #include <cmath>
 #include <complex>
 #include <vector>
+#include <stdexcept>
 
 /// @brief Use random_device as RNG.
 std::random_device g_rd;
@@ -93,7 +94,8 @@ TEST_CASE("Constructor", "[constructor]")
     CHECK(ambiguity.get_n_corr() == 3322);
     CHECK(ambiguity.get_n_delay_bins() == delayMax + std::abs(delayMin) + 1);
     CHECK(ambiguity.get_n_doppler_bins() == 301);
-    CHECK(ambiguity.get_nfft() == 6643);
+    // nCorr reference samples against nCorr + 310 surveillance
+    CHECK(ambiguity.get_nfft() == 3632);
 }
 
 /// @brief Test constructor with rounded Hamming number FFT length.
@@ -116,14 +118,15 @@ TEST_CASE("Constructor_Round", "[constructor]")
     CHECK(ambiguity.get_n_corr() == 3322);
     CHECK(ambiguity.get_n_delay_bins() == delayMax + std::abs(delayMin) + 1);
     CHECK(ambiguity.get_n_doppler_bins() == 301);
-    CHECK(ambiguity.get_nfft() == 6750);
+    // 3632 rounded up to 3645 = 3^6 * 5
+    CHECK(ambiguity.get_nfft() == 3645);
 }
 
 /// @brief Test constructor at the shipped geometry, +/-1000 Hz.
 /// @details The span every node runs (retina-node's default.yml, mirrored in
 /// config/config.yml for standalone use). 2 Hz bins give 1001 Doppler bins and
-/// nCorr 999, and the delay window must fit inside nCorr. The FFT length rounds
-/// 1997 up to 2000 = 2^4 * 5^3.
+/// nCorr 999. Each batch reads 999 + 410 = 1409 surveillance samples, which
+/// rounds up to 1440 = 2^5 * 3^2 * 5.
 TEST_CASE("Constructor_Round_Shipped", "[constructor]")
 {
     int32_t delayMin{-10};
@@ -142,9 +145,8 @@ TEST_CASE("Constructor_Round_Shipped", "[constructor]")
     CHECK(ambiguity.get_doppler_middle() == 0);
     CHECK(ambiguity.get_n_corr() == 999);
     CHECK(ambiguity.get_n_delay_bins() == 411);
-    CHECK(ambiguity.get_n_delay_bins() < ambiguity.get_n_corr());
     CHECK(ambiguity.get_n_doppler_bins() == 1001);
-    CHECK(ambiguity.get_nfft() == 2000);
+    CHECK(ambiguity.get_nfft() == 1440);
 }
 
 /// @brief Test simple ambiguity processing.
@@ -307,4 +309,163 @@ TEST_CASE("Doppler_Window_Hann_Keeps_Peak", "[window]")
   CHECK(peakHann.row == peakNone.row);
   CHECK(peakHann.col == peakNone.col);
   CHECK(std::abs(10 * std::log10(peakHann.power / peakNone.power)) < 0.1);
+}
+
+/// @brief At a low fs there are more Doppler bins than the correlation FFT is
+/// long, so the Doppler buffer must be sized to the bins, not to nfft.
+/// @details 250 kHz at +/-1000 Hz: 1001 bins against nfft 250. Before the fix
+/// this wrote ~12 KB past the buffer every CPI (ClickUp 123zgecjc4k). Run under
+/// AddressSanitizer to see the old overflow; here, check the echo lands where
+/// it should.
+TEST_CASE("Low_Fs_Doppler_Buffer", "[lowfs]")
+{
+  uint32_t fs{250'000};
+  uint32_t nSamples{125'000};
+  Ambiguity ambiguity(-10, 100, -1000, 1000, fs, nSamples, true);
+  REQUIRE(ambiguity.get_n_doppler_bins() > ambiguity.get_nfft());
+
+  IqData x{nSamples}, y{nSamples};
+  delayed_echo(x, y, fs, 60, 100.0);
+  auto map = ambiguity.process(&x, &y);
+  Peak p = find_peak(map);
+  CHECK(map->delay[p.col] == 60);
+  CHECK(std::abs(map->doppler[p.row] - 100.0) <= 1.0 / ambiguity.get_cpi());
+}
+
+/// @brief Reference implementation of the batches map, straight from the
+/// definition: batch i correlates reference [i*nCorr, (i+1)*nCorr) against
+/// surveillance at every delay in the window, zero outside the samples held,
+/// then a Doppler DFT across batches in Ambiguity's output order.
+static std::vector<std::vector<std::complex<double>>> brute_force_map(
+  const std::vector<std::complex<double>> &x,
+  const std::vector<std::complex<double>> &y, int32_t delayMin,
+  int32_t delayMax, uint32_t nDoppler, uint32_t nCorr)
+{
+  const uint32_t nDelay = delayMax - delayMin + 1;
+  std::vector<std::vector<std::complex<double>>> z(nDoppler,
+    std::vector<std::complex<double>>(nDelay));
+  for (uint32_t i = 0; i < nDoppler; i++)
+    for (uint32_t j = 0; j < nDelay; j++)
+      for (uint32_t n = 0; n < nCorr; n++)
+      {
+        const int64_t k = int64_t(i) * nCorr + n + delayMin + j;
+        if (k >= 0 && k < int64_t(y.size()))
+          z[i][j] += y[k] * std::conj(x[size_t(i) * nCorr + n]);
+      }
+  std::vector<std::vector<std::complex<double>>> map(nDoppler,
+    std::vector<std::complex<double>>(nDelay));
+  for (uint32_t row = 0; row < nDoppler; row++)
+  {
+    const uint32_t bin = (row + nDoppler / 2 + 1) % nDoppler;
+    for (uint32_t j = 0; j < nDelay; j++)
+      for (uint32_t i = 0; i < nDoppler; i++)
+        map[row][j] += z[i][j] * std::polar(1.0, -2.0 * M_PI * double(i) * bin / nDoppler);
+  }
+  return map;
+}
+
+/// @brief The FFT path matches the definition, including delays beyond nCorr
+/// and the zeroed samples before and after the CPI.
+/// @details 41 Doppler bins of 48 samples, window -60..90: the window is wider
+/// than a batch at both ends.
+TEST_CASE("Matches_Brute_Force", "[delay]")
+{
+  auto round_hamming = GENERATE(true, false);
+  uint32_t fs{10'000};
+  uint32_t nSamples{2'000};
+  int32_t delayMin{-60}, delayMax{90};
+  Ambiguity ambiguity(delayMin, delayMax, -100, 100, fs, nSamples, round_hamming);
+  REQUIRE(ambiguity.get_n_doppler_bins() == 41);
+  REQUIRE(ambiguity.get_n_corr() == 48);
+
+  IqData x{nSamples}, y{nSamples};
+  random_iq(x);
+  random_iq(y);
+  std::vector<std::complex<double>> xv = x.get_data(), yv = y.get_data();
+  auto expected = brute_force_map(xv, yv, delayMin, delayMax, 41, 48);
+  auto map = ambiguity.process(&x, &y);
+
+  double peak = 0.0, worst = 0.0;
+  for (uint32_t i = 0; i < 41; i++)
+    for (uint32_t j = 0; j < expected[i].size(); j++)
+    {
+      peak = std::max(peak, std::abs(expected[i][j]));
+      worst = std::max(worst, std::abs(map->data[i][j] - expected[i][j]));
+    }
+  CHECK(worst < 1e-9 * peak);
+  CHECK(x.get_length() == 0);
+  CHECK(y.get_length() == 0);
+}
+
+/// @brief A target far beyond nCorr keeps its full power.
+/// @details 250 kHz at +/-1000 Hz gives nCorr 124. Equal-length batches would
+/// lose (124 - d) / 124 of the power and nothing at all past d = 123; with the
+/// extended segment an echo at 300 bins is as strong as one at 20.
+TEST_CASE("Far_Delay_Full_Power", "[delay]")
+{
+  uint32_t fs{250'000};
+  uint32_t nSamples{125'000};
+  Ambiguity ambiguity(-10, 400, -1000, 1000, fs, nSamples, true);
+  REQUIRE(ambiguity.get_n_corr() == 124);
+  REQUIRE(ambiguity.get_n_delay_bins() == 411);
+
+  IqData x1{nSamples}, y1{nSamples}, x2{nSamples}, y2{nSamples};
+  delayed_echo(x1, y1, fs, 20, 100.0);
+  delayed_echo(x2, y2, fs, 300, 100.0);
+  Peak near = find_peak(ambiguity.process(&x1, &y1));
+  auto map = ambiguity.process(&x2, &y2);
+  Peak far = find_peak(map);
+  CHECK(map->delay[near.col] == 20);
+  CHECK(map->delay[far.col] == 300);
+  CHECK(std::abs(10 * std::log10(far.power / near.power)) < 0.5);
+}
+
+/// @brief Negative delays are read from before the batch.
+TEST_CASE("Negative_Delay", "[delay]")
+{
+  uint32_t fs{250'000};
+  uint32_t nSamples{125'000};
+  Ambiguity ambiguity(-200, 50, -1000, 1000, fs, nSamples, true);
+  // echo leads the reference by 150 samples: x[i] = s[i], y[i] = s[i + 150]
+  IqData x{nSamples}, y{nSamples};
+  delayed_echo(y, x, fs, 150, 0.0);
+  auto map = ambiguity.process(&x, &y);
+  CHECK(map->delay[find_peak(map).col] == -150);
+}
+
+/// @brief An empty window, or one longer than the CPI, is refused.
+TEST_CASE("Delay_Window_Invalid_Throws", "[delay]")
+{
+  CHECK_THROWS_AS(Ambiguity(100, 50, -1000, 1000, 250'000, 125'000, true),
+    std::invalid_argument);
+  CHECK_THROWS_AS(Ambiguity(0, 2'000, -100, 100, 10'000, 2'000, true),
+    std::invalid_argument);
+}
+
+/// @brief A CPI shorter than the Doppler bin count leaves batches empty.
+TEST_CASE("Empty_Batch_Throws", "[lowfs]")
+{
+  // 2 Hz bins at +/-1000 Hz is 1001 bins, from only 500 samples
+  CHECK_THROWS_AS(Ambiguity(-10, 400, -1000, 1000, 1'000, 500, true),
+    std::invalid_argument);
+}
+
+/// @brief Every sample rate retina-gui offers runs the shipped window in full.
+/// @details Shipped: delay -10..400, +/-1000 Hz, 0.5 s CPI. nCorr runs from 999
+/// at 2 MHz down to 31 at 62.5 kHz, and the window is honoured at all of them.
+TEST_CASE("Every_Gui_Sample_Rate", "[lowfs]")
+{
+  auto fs = GENERATE(62'500u, 125'000u, 250'000u, 500'000u, 1'000'000u,
+    2'000'000u);
+  uint32_t nSamples = fs / 2;
+  Ambiguity ambiguity(-10, 400, -1000, 1000, fs, nSamples, true);
+  CHECK(ambiguity.get_n_delay_bins() == 411);
+
+  IqData x{nSamples}, y{nSamples};
+  delayed_echo(x, y, fs, 300, 100.0);
+  auto map = ambiguity.process(&x, &y);
+  REQUIRE(map->get_nCols() == 411);
+  CHECK(map->delay.front() == -10);
+  CHECK(map->delay.back() == 400);
+  CHECK(map->delay[find_peak(map).col] == 300);
 }

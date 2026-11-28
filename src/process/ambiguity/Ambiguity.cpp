@@ -1,4 +1,5 @@
 #include "Ambiguity.h"
+#include <algorithm>
 #include <complex>
 #include <iostream>
 #include <deque>
@@ -7,6 +8,8 @@
 #include <math.h>
 #include <cmath>
 #include <chrono>
+#include <limits>
+#include <stdexcept>
 
 // constructor
 Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax, 
@@ -14,13 +17,10 @@ Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax,
   uint32_t _n, bool _roundHamming, DopplerWindow _dopplerWindow)
 {
   // init
-  delayMin = _delayMin;
-  delayMax = _delayMax;
   dopplerMin = _dopplerMin;
   dopplerMax = _dopplerMax;
   fs = _fs;
   nSamples = _n;
-  nDelayBins = static_cast<uint16_t>(_delayMax - _delayMin + 1);
   dopplerMiddle = (_dopplerMin + _dopplerMax) / 2.0;
   
   // doppler calculations
@@ -38,7 +38,30 @@ Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax,
 
   // batches constants
   nCorr = _n / nDopplerBins;
+  if (nCorr == 0)
+  {
+    throw std::invalid_argument("Ambiguity needs at least one sample per batch: "
+      "the CPI is shorter than the number of Doppler bins");
+  }
   cpi = (static_cast<double>(nCorr) * nDopplerBins) / fs;
+
+  // Delay window. Each batch correlates nCorr reference samples against a
+  // surveillance segment that is longer by the window, so every delay sees the
+  // full batch and the window does not depend on nCorr, fs or the Doppler span.
+  // See config/README.md, process.ambiguity.
+  if (_delayMax < _delayMin)
+  {
+    throw std::invalid_argument("Ambiguity needs delayMax >= delayMin");
+  }
+  const int64_t window = int64_t(_delayMax) - _delayMin + 1;
+  if (window > std::numeric_limits<uint16_t>::max() || window > int64_t(_n))
+  {
+    throw std::invalid_argument("Ambiguity delay window is longer than the CPI");
+  }
+  delayMin = _delayMin;
+  delayMax = _delayMax;
+  nDelayBins = static_cast<uint16_t>(window);
+  nSegment = nCorr + nDelayBins - 1;
 
   // update doppler bins to true cpi time
   resolutionDoppler = 1.0 / cpi;
@@ -59,8 +82,9 @@ Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax,
     i++;
   }
 
-  // other setup
-  nfft = 2 * nCorr - 1;
+  // A linear correlation of nCorr against nSegment samples, with no wrap
+  // into the delays kept, needs nSegment points.
+  nfft = nSegment;
   if (_roundHamming) {
     nfft = next_hamming(nfft);
   }
@@ -80,7 +104,8 @@ Ambiguity::Ambiguity(int32_t _delayMin, int32_t _delayMax,
   dataXi.resize(nfft);
   dataYi.resize(nfft);
   dataZi.resize(nfft);
-  dataDoppler.resize(nfft);
+  // The Doppler FFT runs over nDopplerBins, which can exceed nfft at a low fs.
+  dataDoppler.resize(nDopplerBins);
   fftXi = fftw_plan_dft_1d(nfft, reinterpret_cast<fftw_complex *>(dataXi.data()),
                            reinterpret_cast<fftw_complex *>(dataXi.data()), FFTW_FORWARD, FFTW_ESTIMATE);
   fftYi = fftw_plan_dft_1d(nfft, reinterpret_cast<fftw_complex *>(dataYi.data()),
@@ -128,20 +153,33 @@ Map<std::complex<double>> *Ambiguity::process(IqData *x, IqData *y)
   }
 
   // range processing
+  // Batch i correlates reference samples [i*nCorr, (i+1)*nCorr) against
+  // surveillance [i*nCorr + delayMin, i*nCorr + delayMax + nCorr), so map
+  // column j is delay delayMin + j at full overlap. Surveillance outside the
+  // samples held (before the CPI for a negative delayMin, after it for the last
+  // batches) is zero: only those batches lose overlap, and only at the edges
+  // of the window.
   nSamples = nDopplerBins * nCorr;
-  for (uint16_t i = 0; i < nDopplerBins; i++)
+  const int64_t nY = y->get_length();
+  for (uint32_t i = 0; i < nDopplerBins; i++)
   {
-    for (uint16_t j = 0; j < nCorr; j++)
+    const int64_t start = int64_t(i) * nCorr;
+    for (uint32_t j = 0; j < nCorr; j++)
     {
-      dataXi[j] = x->pop_front();
-      dataYi[j] = y->pop_front();
+      dataXi[j] = (*x)[static_cast<uint32_t>(start + j)];
     }
+    std::fill(dataXi.begin() + nCorr, dataXi.end(), Complex(0, 0));
 
-    for (uint16_t j = nCorr; j < nfft; j++)
+    // segment [first, first + nSegment), clipped to [0, nY)
+    const int64_t first = start + delayMin;
+    const int64_t lo = std::clamp<int64_t>(-first, 0, nSegment);
+    const int64_t hi = std::clamp<int64_t>(nY - first, lo, nSegment);
+    std::fill(dataYi.begin(), dataYi.begin() + lo, Complex(0, 0));
+    for (int64_t m = lo; m < hi; m++)
     {
-      dataXi[j] = {0, 0};
-      dataYi[j] = {0, 0};
+      dataYi[m] = (*y)[static_cast<uint32_t>(first + m)];
     }
+    std::fill(dataYi.begin() + hi, dataYi.end(), Complex(0, 0));
 
     fftw_execute(fftXi);
     fftw_execute(fftYi);
@@ -154,17 +192,15 @@ Map<std::complex<double>> *Ambiguity::process(IqData *x, IqData *y)
 
     fftw_execute(fftZi);
 
-    // Extract the centre of the correlation straight into the map. The old
-    // dataCorr staging array copied 2*nDelayBins+1 values out of dataZi so
-    // that a single window could be read back out of it; that window is just
-    // dataZi at (j + delayMin), wrapped, so neither the staging array nor the
-    // intermediate corr vector is needed.
-    for (uint16_t j = 0; j < nDelayBins; j++)
-    {
-      const int64_t k = int64_t(j) + delayMin;
-      map->data[i][j] = dataZi[k < 0 ? k + nfft : k];
-    }
+    // Lag j of the correlation is delay delayMin + j. nfft >= nSegment, so
+    // none of the kept lags wraps.
+    std::copy(dataZi.begin(), dataZi.begin() + nDelayBins, map->data[i].begin());
   }
+
+  // Both channels are consumed: drain them, as the pop_front loop this
+  // replaced did. Constant time.
+  x->clear();
+  y->clear();
 
   // doppler processing
   for (uint16_t i = 0; i < nDelayBins; i++)

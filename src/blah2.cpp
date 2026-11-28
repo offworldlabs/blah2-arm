@@ -192,9 +192,10 @@ int main(int argc, char **argv)
   tree["process"]["ambiguity"]["dopplerMax"] >> dopplerMax;
   // FFTW bakes the thread count into the plan, so each consumer gets its share
   // of the cores by planning with its own count. Ambiguity and the spectrum
-  // analyser both run in the back stage; the clutter filter is the front
-  // stage's only transform and chooses its own count inside its constructor.
-  fftw_plan_with_nthreads(blah2::kBackStageThreads);
+  // analyser both run in the back stage, each at its own count; the clutter
+  // filter is the front stage's only transform and chooses its own count
+  // inside its constructor.
+  fftw_plan_with_nthreads(blah2::kAmbiguityThreads);
   Ambiguity *ambiguity = new Ambiguity(delayMin, delayMax,
     dopplerMin, dopplerMax, fs, nSamples, roundHamming, dopplerWindow);
 
